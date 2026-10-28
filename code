@@ -1,0 +1,2098 @@
+from __future__ import annotations
+
+import asyncio
+import html
+import logging
+import os
+import time
+from datetime import datetime
+
+import aiohttp
+from aiohttp import web
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery, FSInputFile, InlineKeyboardButton,
+    InlineKeyboardMarkup, MenuButtonWebApp, Message, WebAppInfo,
+)
+from aiocryptopay import AioCryptoPay, Networks
+
+# ============================================================
+#  ассетка
+# ============================================================
+BOT_TOKEN    = "-"
+CRYPTO_TOKEN = "-"
+CACTUS_TOKEN = "-"
+ADMIN_IDS    = [-]
+SUPPORT_USERNAME = "-"
+REFERRAL_PERCENT = 2.5
+
+CACTUS_API        = "-"
+CACTUS_MIN_AMOUNT = 100
+
+WEBAPP_PORT = 8080
+WEBAPP_URL  = "-"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WEBAPP_DIR = os.path.join(BASE_DIR, "../webapp1")
+
+USERS_FILE      = os.path.join(BASE_DIR, "../users1.txt")
+PURCHASES_FILE  = os.path.join(BASE_DIR, "../purchases1.txt")
+TOPUPS_FILE     = os.path.join(BASE_DIR, "../topups1.txt")
+PROMOS_FILE     = os.path.join(BASE_DIR, "../used_promos1.txt")
+STOCK_FILE      = os.path.join(BASE_DIR, "../stock1.txt")
+STOCK_USED_FILE = os.path.join(BASE_DIR, "../stock_used1.txt")
+TICKETS_FILE    = os.path.join(BASE_DIR, "../tickets1.txt")
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+bot    = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp     = Dispatcher(storage=MemoryStorage())
+crypto = AioCryptoPay(token=CRYPTO_TOKEN, network=Networks.MAIN_NET)
+
+BOT_USERNAME: str = ""
+
+_users_lock     = asyncio.Lock()
+_purchases_lock = asyncio.Lock()
+_topups_lock    = asyncio.Lock()
+_promos_lock    = asyncio.Lock()
+_tickets_lock   = asyncio.Lock()
+
+# ============================================================
+#  выдача с дб
+# ============================================================
+CODES_BY_PERIOD = {
+    "1m":  {10: 2},
+    "3m":  {10: 6},
+    "6m":  {100: 1, 10: 2},
+    "12m": {100: 2, 10: 4},
+}
+
+# ============================================================
+#  хуяктус
+# ============================================================
+async def cactus_create_payment(amount: float, order_id: str, description: str) -> dict:
+    payload = {
+        "token": CACTUS_TOKEN,
+        "amount": amount,
+        "currency": "RUB",
+        "order_id": order_id,
+        "description": description,
+        "redirect_url": f"https://t.me/{BOT_USERNAME}",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{CACTUS_API}?method=create",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                return await resp.json(content_type=None)
+    except Exception as e:
+        log.exception("cactus_create_payment error")
+        return {"status": "error", "response": str(e)}
+
+
+async def cactus_get_payment(order_id: str) -> dict:
+    payload = {"token": CACTUS_TOKEN, "order_id": order_id}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{CACTUS_API}?method=get",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                return await resp.json(content_type=None)
+    except Exception as e:
+        log.exception("cactus_get_payment error")
+        return {"status": "error", "response": str(e)}
+
+
+# ============================================================
+#  фоки говная всякг
+# ============================================================
+def _find_photo():
+    for ext in ("jpg", "jpeg", "png", "webp"):
+        p = os.path.join(BASE_DIR, f"Admiral.{ext}")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+PHOTO_PATH = _find_photo()
+PHOTO_FILE = FSInputFile(PHOTO_PATH) if PHOTO_PATH else None
+
+
+async def send_photo_msg(target: Message, text: str, kb=None):
+    if PHOTO_FILE is not None:
+        try:
+            return await target.answer_photo(photo=PHOTO_FILE, caption=text, reply_markup=kb)
+        except Exception as e:
+            log.warning("photo send failed: %s", e)
+    return await target.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+async def send_photo_to_user(user_id, text: str, kb=None):
+    if PHOTO_FILE is not None:
+        try:
+            return await bot.send_photo(user_id, PHOTO_FILE, caption=text, reply_markup=kb)
+        except Exception as e:
+            log.warning("send_photo_to_user failed: %s", e)
+    return await bot.send_message(user_id, text, reply_markup=kb,
+                                  disable_web_page_preview=True)
+
+
+async def show(call: CallbackQuery, text: str, kb=None):
+    if PHOTO_FILE is not None:
+        try:
+            await call.message.edit_caption(caption=text, reply_markup=kb)
+            return
+        except Exception:
+            pass
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await send_photo_msg(call.message, text, kb)
+
+
+# ============================================================
+#  хелпа
+# ============================================================
+def _sanitize(s: str) -> str:
+    if s is None:
+        return ""
+    return str(s).replace("|", "/").replace("\n", " ").replace("\r", " ").strip()
+
+
+def _clean_text(s: str) -> str:
+    return (s or "").replace("|", "/").replace("\n", "\\n").replace("\r", "").strip()
+
+
+def _unclean_text(s: str) -> str:
+    return (s or "").replace("\\n", "\n")
+
+
+def _ensure_text_files():
+    if not os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            f.write("# user_id|username|full_name|balance|ref_balance|"
+                    "purchases_count|referrer_id|created_at|city\n")
+    if not os.path.exists(PURCHASES_FILE):
+        with open(PURCHASES_FILE, "w", encoding="utf-8") as f:
+            f.write("# id|user_id|service|product_id|title|price|codes|created_at\n")
+    if not os.path.exists(TOPUPS_FILE):
+        with open(TOPUPS_FILE, "w", encoding="utf-8") as f:
+            f.write("# id|user_id|system|order_id|invoice_id|amount|"
+                    "cact_id|pay_url|status|created_at\n")
+    if not os.path.exists(PROMOS_FILE):
+        with open(PROMOS_FILE, "w", encoding="utf-8") as f:
+            f.write("# code|user_id|amount|used_at\n")
+    if not os.path.exists(STOCK_FILE):
+        with open(STOCK_FILE, "w", encoding="utf-8") as f:
+            f.write("# Формат: номинал,код\n# номинал — в лирах (10, 100)\n"
+                    "# 10,LIRA-ABCD-1111-2222\n# 100,LIRA-IJKL-5555-6666\n")
+    if not os.path.exists(STOCK_USED_FILE):
+        with open(STOCK_USED_FILE, "w", encoding="utf-8") as f:
+            f.write("# Формат: номинал,код,user_id,дата\n")
+    if not os.path.exists(TICKETS_FILE):
+        with open(TICKETS_FILE, "w", encoding="utf-8") as f:
+            f.write("# id|user_id|username|status|created_at|message|admin_reply|replied_at\n")
+
+
+def _normalize_username(username):
+    if not username:
+        return ""
+    return username if username.startswith("@") else f"@{username}"
+
+
+# ============================================================
+#  шестаки
+# ============================================================
+def _read_users_sync() -> dict:
+    if not os.path.exists(USERS_FILE):
+        return {}
+    users = {}
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n")
+            if not raw or raw.startswith("#"):
+                continue
+            parts = raw.split("|")
+            if len(parts) < 8:
+                continue
+            try:
+                uid = int(parts[0])
+            except ValueError:
+                continue
+            users[uid] = {
+                "user_id": uid,
+                "username": parts[1],
+                "full_name": parts[2],
+                "balance": float(parts[3] or 0),
+                "ref_balance": float(parts[4] or 0),
+                "purchases_count": int(parts[5] or 0),
+                "referrer_id": int(parts[6]) if parts[6] else None,
+                "created_at": parts[7],
+                "city": parts[8] if len(parts) > 8 else "",
+            }
+    return users
+
+
+def _write_users_sync(users: dict):
+    tmp = USERS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("# user_id|username|full_name|balance|ref_balance|"
+                "purchases_count|referrer_id|created_at|city\n")
+        for u in users.values():
+            ref = u["referrer_id"] if u["referrer_id"] else ""
+            f.write(
+                f"{u['user_id']}|{_sanitize(u['username'])}|{_sanitize(u['full_name'])}|"
+                f"{u['balance']}|{u['ref_balance']}|{u['purchases_count']}|"
+                f"{ref}|{u['created_at']}|{_sanitize(u.get('city', ''))}\n"
+            )
+    os.replace(tmp, USERS_FILE)
+
+
+async def db_get_user(user_id):
+    users = await asyncio.to_thread(_read_users_sync)
+    return users.get(user_id)
+
+
+async def db_create_user(user_id, username, full_name, referrer_id=None):
+    async with _users_lock:
+        def _inner():
+            users = _read_users_sync()
+            if user_id in users:
+                return
+            users[user_id] = {
+                "user_id": user_id,
+                "username": _normalize_username(username),
+                "full_name": full_name or "",
+                "balance": 0.0,
+                "ref_balance": 0.0,
+                "purchases_count": 0,
+                "referrer_id": referrer_id,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "city": "",
+            }
+            _write_users_sync(users)
+        await asyncio.to_thread(_inner)
+
+
+async def db_refresh_profile(user_id, username, full_name):
+    async with _users_lock:
+        def _inner():
+            users = _read_users_sync()
+            if user_id not in users:
+                return
+            users[user_id]["username"] = _normalize_username(username)
+            users[user_id]["full_name"] = full_name or ""
+            _write_users_sync(users)
+        await asyncio.to_thread(_inner)
+
+
+async def db_set_city(user_id, city):
+    async with _users_lock:
+        def _inner():
+            users = _read_users_sync()
+            if user_id not in users:
+                return
+            users[user_id]["city"] = city
+            _write_users_sync(users)
+        await asyncio.to_thread(_inner)
+
+
+async def db_add_balance(user_id, amount, to_ref=False):
+    async with _users_lock:
+        def _inner():
+            users = _read_users_sync()
+            if user_id not in users:
+                return
+            if to_ref:
+                users[user_id]["ref_balance"] = float(users[user_id]["ref_balance"]) + amount
+            else:
+                users[user_id]["balance"] = float(users[user_id]["balance"]) + amount
+            _write_users_sync(users)
+        await asyncio.to_thread(_inner)
+
+
+async def db_move_ref_to_main(user_id):
+    async with _users_lock:
+        def _inner():
+            users = _read_users_sync()
+            if user_id not in users:
+                return 0.0
+            amt = float(users[user_id]["ref_balance"])
+            if amt > 0:
+                users[user_id]["balance"] = float(users[user_id]["balance"]) + amt
+                users[user_id]["ref_balance"] = 0.0
+                _write_users_sync(users)
+            return amt
+        return await asyncio.to_thread(_inner)
+
+
+async def db_count_referrals(user_id):
+    users = await asyncio.to_thread(_read_users_sync)
+    return sum(1 for u in users.values() if u.get("referrer_id") == user_id)
+
+
+# ============================================================
+#  корза
+# ============================================================
+def _read_purchases_sync() -> list:
+    if not os.path.exists(PURCHASES_FILE):
+        return []
+    rows = []
+    with open(PURCHASES_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n")
+            if not raw or raw.startswith("#"):
+                continue
+            parts = raw.split("|")
+            if len(parts) < 8:
+                continue
+            try:
+                rows.append({
+                    "id": int(parts[0]),
+                    "user_id": int(parts[1]),
+                    "service": parts[2],
+                    "product_id": parts[3],
+                    "title": parts[4],
+                    "price": float(parts[5] or 0),
+                    "codes": parts[6],
+                    "created_at": parts[7],
+                })
+            except (ValueError, IndexError):
+                continue
+    return rows
+
+
+async def db_add_purchase(user_id, service, product_id, title, price, codes):
+    codes_str = ";".join(codes) if codes else ""
+
+    def _inner():
+        rows = _read_purchases_sync()
+        new_id = (max((r["id"] for r in rows), default=0)) + 1
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(PURCHASES_FILE, "a", encoding="utf-8") as f:
+            f.write(
+                f"{new_id}|{user_id}|{_sanitize(service)}|{_sanitize(product_id)}|"
+                f"{_sanitize(title)}|{price}|{codes_str}|{now}\n"
+            )
+        return new_id
+
+    async with _purchases_lock:
+        new_id = await asyncio.to_thread(_inner)
+
+    async with _users_lock:
+        def _bump():
+            users = _read_users_sync()
+            if user_id in users:
+                users[user_id]["purchases_count"] = int(users[user_id]["purchases_count"]) + 1
+                _write_users_sync(users)
+        await asyncio.to_thread(_bump)
+
+    return new_id
+
+
+async def db_get_purchases(user_id, limit=15):
+    rows = await asyncio.to_thread(_read_purchases_sync)
+    rows = [r for r in rows if r["user_id"] == user_id]
+    rows.sort(key=lambda r: r["id"], reverse=True)
+    return rows[:limit]
+
+
+async def db_get_purchase(pid, user_id):
+    rows = await asyncio.to_thread(_read_purchases_sync)
+    for r in rows:
+        if r["id"] == pid and r["user_id"] == user_id:
+            return r
+    return None
+
+
+# ============================================================
+#  туп1
+# ============================================================
+def _read_topups_sync() -> list:
+    if not os.path.exists(TOPUPS_FILE):
+        return []
+    rows = []
+    with open(TOPUPS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n")
+            if not raw or raw.startswith("#"):
+                continue
+            parts = raw.split("|")
+            if len(parts) < 10:
+                continue
+            try:
+                rows.append({
+                    "id": int(parts[0]),
+                    "user_id": int(parts[1]),
+                    "system": parts[2],
+                    "order_id": parts[3],
+                    "invoice_id": int(parts[4]) if parts[4] else None,
+                    "amount": float(parts[5] or 0),
+                    "cact_id": int(parts[6]) if parts[6] else None,
+                    "pay_url": parts[7],
+                    "status": parts[8],
+                    "created_at": parts[9],
+                })
+            except (ValueError, IndexError):
+                continue
+    return rows
+
+
+def _create_topup_sync(user_id, system, order_id="", invoice_id="",
+                       amount=0.0, cact_id="", pay_url=""):
+    rows = _read_topups_sync()
+    new_id = (max((r["id"] for r in rows), default=0)) + 1
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(TOPUPS_FILE, "a", encoding="utf-8") as f:
+        f.write(
+            f"{new_id}|{user_id}|{system}|{_sanitize(order_id)}|{invoice_id}|"
+            f"{amount}|{cact_id}|{_sanitize(pay_url)}|pending|{now}\n"
+        )
+    return new_id
+
+
+def _rewrite_topup_status_sync(req_id, status):
+    rows = _read_topups_sync()
+    changed = False
+    for r in rows:
+        if r["id"] == req_id:
+            r["status"] = status
+            changed = True
+    if not changed:
+        return
+    tmp = TOPUPS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("# id|user_id|system|order_id|invoice_id|amount|"
+                "cact_id|pay_url|status|created_at\n")
+        for r in rows:
+            f.write(
+                f"{r['id']}|{r['user_id']}|{r['system']}|{_sanitize(r['order_id'])}|"
+                f"{r['invoice_id'] or ''}|{r['amount']}|{r['cact_id'] or ''}|"
+                f"{_sanitize(r['pay_url'])}|{r['status']}|{r['created_at']}\n"
+            )
+    os.replace(tmp, TOPUPS_FILE)
+
+
+async def db_create_topup_sbp(user_id, order_id, amount, cact_id, pay_url):
+    async with _topups_lock:
+        return await asyncio.to_thread(
+            _create_topup_sync, user_id, "sbp", order_id, "", amount, cact_id or "", pay_url
+        )
+
+
+async def db_create_topup_crypto(user_id, invoice_id, amount, pay_url):
+    async with _topups_lock:
+        return await asyncio.to_thread(
+            _create_topup_sync, user_id, "crypto", "", invoice_id, amount, "", pay_url
+        )
+
+
+async def db_get_topup_by_id(req_id):
+    rows = await asyncio.to_thread(_read_topups_sync)
+    for r in rows:
+        if r["id"] == req_id:
+            return r
+    return None
+
+
+async def db_set_topup_status(req_id, status):
+    async with _topups_lock:
+        await asyncio.to_thread(_rewrite_topup_status_sync, req_id, status)
+
+
+# ============================================================
+#  промка
+# ============================================================
+def _read_promos_sync() -> list:
+    if not os.path.exists(PROMOS_FILE):
+        return []
+    rows = []
+    with open(PROMOS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n")
+            if not raw or raw.startswith("#"):
+                continue
+            parts = raw.split("|")
+            if len(parts) < 4:
+                continue
+            try:
+                rows.append({
+                    "code": parts[0],
+                    "user_id": int(parts[1]),
+                    "amount": float(parts[2] or 0),
+                    "used_at": parts[3],
+                })
+            except (ValueError, IndexError):
+                continue
+    return rows
+
+
+async def db_promo_is_used(code):
+    rows = await asyncio.to_thread(_read_promos_sync)
+    return any(r["code"] == code for r in rows)
+
+
+async def db_mark_promo_used(code, user_id, amount):
+    async with _promos_lock:
+        def _inner():
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(PROMOS_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{code}|{user_id}|{amount}|{now}\n")
+        await asyncio.to_thread(_inner)
+
+
+# ============================================================
+#  хелпа-общ
+# ============================================================
+def _read_tickets_sync() -> list:
+    if not os.path.exists(TICKETS_FILE):
+        return []
+    rows = []
+    with open(TICKETS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n")
+            if not raw or raw.startswith("#"):
+                continue
+            parts = raw.split("|")
+            if len(parts) < 8:
+                continue
+            try:
+                rows.append({
+                    "id": int(parts[0]),
+                    "user_id": int(parts[1]),
+                    "username": parts[2],
+                    "status": parts[3],
+                    "created_at": parts[4],
+                    "message": _unclean_text(parts[5]),
+                    "admin_reply": _unclean_text(parts[6]),
+                    "replied_at": parts[7],
+                })
+            except (ValueError, IndexError):
+                continue
+    return rows
+
+
+def _write_tickets_sync(rows: list):
+    tmp = TICKETS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("# id|user_id|username|status|created_at|message|admin_reply|replied_at\n")
+        for r in rows:
+            f.write(
+                f"{r['id']}|{r['user_id']}|{_sanitize(r['username'])}|{r['status']}|"
+                f"{r['created_at']}|{_clean_text(r['message'])}|"
+                f"{_clean_text(r['admin_reply'])}|{r['replied_at']}\n"
+            )
+    os.replace(tmp, TICKETS_FILE)
+
+
+async def db_create_ticket(user_id, username, message_text):
+    async with _tickets_lock:
+        def _inner():
+            rows = _read_tickets_sync()
+            new_id = (max((r["id"] for r in rows), default=0)) + 1
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rows.append({
+                "id": new_id, "user_id": user_id, "username": username or "",
+                "status": "new", "created_at": now, "message": message_text or "",
+                "admin_reply": "", "replied_at": "",
+            })
+            _write_tickets_sync(rows)
+            return new_id
+        return await asyncio.to_thread(_inner)
+
+
+async def db_get_ticket(ticket_id):
+    rows = await asyncio.to_thread(_read_tickets_sync)
+    for r in rows:
+        if r["id"] == ticket_id:
+            return r
+    return None
+
+
+async def db_get_new_tickets(limit=20):
+    rows = await asyncio.to_thread(_read_tickets_sync)
+    new_rows = [r for r in rows if r["status"] == "new"]
+    new_rows.sort(key=lambda r: r["id"], reverse=True)
+    return new_rows[:limit]
+
+
+async def db_set_ticket_reply(ticket_id, reply_text):
+    async with _tickets_lock:
+        def _inner():
+            rows = _read_tickets_sync()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for r in rows:
+                if r["id"] == ticket_id:
+                    r["admin_reply"] = reply_text
+                    r["status"] = "answered"
+                    r["replied_at"] = now
+                    break
+            _write_tickets_sync(rows)
+        await asyncio.to_thread(_inner)
+
+
+# ============================================================
+#  сток
+# ============================================================
+def _read_stock_sync():
+    _ensure_text_files()
+    result = []
+    with open(STOCK_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                nominal = int(parts[0])
+                code = parts[1]
+                result.append((nominal, code, line))
+            except ValueError:
+                continue
+    return result
+
+
+def _take_codes_by_period_sync(period, user_id):
+    combo = CODES_BY_PERIOD.get(period)
+    if not combo:
+        return []
+
+    all_rows = _read_stock_sync()
+    available = {}
+    for nom, code, _line in all_rows:
+        available.setdefault(nom, []).append(code)
+
+    for nom, need in combo.items():
+        if len(available.get(nom, [])) < need:
+            return []
+
+    selected = []
+    selected_codes = set()
+    for nom, need in combo.items():
+        for code in available[nom][:need]:
+            selected.append((nom, code))
+            selected_codes.add(code)
+
+    with open(STOCK_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    new_lines = []
+    for line in lines:
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            new_lines.append(line); continue
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) < 2:
+            new_lines.append(line); continue
+        if parts[1] in selected_codes:
+            continue
+        new_lines.append(line)
+
+    with open(STOCK_FILE, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(STOCK_USED_FILE, "a", encoding="utf-8") as f:
+        for nom, code in selected:
+            f.write(f"{nom},{code},{user_id},{now}\n")
+
+    return [code for _, code in selected]
+
+
+async def db_take_codes_by_period(period, user_id):
+    return await asyncio.to_thread(_take_codes_by_period_sync, period, user_id)
+
+
+# ============================================================
+# бай
+# ============================================================
+async def perform_purchase(user_id, service, plan, period):
+    if service not in SERVICE_NAMES:
+        return {"ok": False, "error": "Сервис не найден"}
+
+    data = get_plan(service, plan, period)
+    if data is None:
+        return {"ok": False, "error": "Тариф не найден"}
+
+    title, price = data
+    period_name = PERIOD_NAMES.get(period, period)
+
+    u = await db_get_user(user_id)
+    if not u:
+        return {"ok": False, "error": "Пользователь не найден"}
+
+    balance = float(u.get("balance", 0))
+    if balance < price:
+        return {
+            "ok": False,
+            "error": f"Недостаточно средств. Нужно {fmt_money(price)} ₽, у тебя {fmt_money(balance)} ₽",
+        }
+
+    codes = await db_take_codes_by_period(period, user_id)
+
+    await db_add_balance(user_id, -price)
+    full_title = f"{SERVICE_NAMES[service]} | {title} | {period_name}"
+    pid = await db_add_purchase(
+        user_id=user_id, service=service,
+        product_id=f"{service}_{plan}_{period}",
+        title=full_title, price=price, codes=codes,
+    )
+
+    u = await db_get_user(user_id) or {}
+    return {
+        "ok": True,
+        "purchase_id": pid,
+        "title": full_title,
+        "price": price,
+        "codes": codes,
+        "balance": float(u.get("balance", 0)),
+    }
+
+
+# ============================================================
+#  стата ебланоидов
+# ============================================================
+async def db_stats():
+    users = await asyncio.to_thread(_read_users_sync)
+    purchases = await asyncio.to_thread(_read_purchases_sync)
+
+    ref_counts = {}
+    for u in users.values():
+        ref = u.get("referrer_id")
+        if ref:
+            ref_counts[ref] = ref_counts.get(ref, 0) + 1
+
+    top_sorted = sorted(ref_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_refs = []
+    for rid, count in top_sorted:
+        u = users.get(rid)
+        if u:
+            top_refs.append({
+                "user_id": rid,
+                "username": u["username"],
+                "full_name": u["full_name"],
+                "invited": count,
+            })
+
+    return {
+        "total_users": len(users),
+        "turnover": sum(p["price"] for p in purchases),
+        "total_purchases": len(purchases),
+        "top_refs": top_refs,
+    }
+
+
+# ============================================================
+#  инит
+# ============================================================
+def db_init():
+    _ensure_text_files()
+    print(f"📁 users1.txt:     {USERS_FILE}")
+    print(f"📁 purchases1.txt: {PURCHASES_FILE}")
+    print(f"📁 topups1.txt:    {TOPUPS_FILE}")
+    print(f"📁 used_promos1:   {PROMOS_FILE}")
+    print(f"📁 stock1.txt:     {STOCK_FILE}")
+    print(f"📁 tickets1.txt:   {TICKETS_FILE}")
+    if PHOTO_PATH:
+        print(f"🖼  Фото: {PHOTO_PATH}")
+
+
+# ============================================================
+#  шоп
+# ============================================================
+SERVICES = [
+    ("soundcloud", "SoundCloud"),
+    ("spotify",    "Spotify"),
+    ("claude",     "Claude"),
+    ("capcut",     "CapCut"),
+    ("telegram",   "Telegram"),
+    ("chatgpt",    "ChatGPT"),
+]
+SERVICE_NAMES = dict(SERVICES)
+
+PERIODS = [
+    ("1m",  "0.5 г."),
+    ("3m",  "1 г."),
+    ("6m",  "1.5 г."),
+    ("12m", "2 г."),
+    ("1s", "1 шт."),
+    ("2s", "2 шт."),
+    ("3s", "3 шт."),
+    ("4s", "4 шт."),
+]
+PERIOD_NAMES = dict(PERIODS)
+
+PLANS = {
+    "soundcloud": [
+        ("artistpro", "Альфа-PVP Синяя/Зеленая VHQ", {"1m": 2290,  "3m": 4390,  "6m": 6490,  "12m": 8590}),
+        ("dae", "Метамфетамин кристаллы VHQ", {"1m": 3990, "3m": 7990, "6m": 11790, "12m": 15590}),
+        ("wonv", "Амфетамин", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("mcle", "Экстази XTC 280mg", {"1s": 690 , "2s": 1290, "3s": 1790, "4s": 2290}),
+        ("kdqecnf", "Экстази XTC PureHeart 250mg", {"1s": 2290, "2s": 4090, "3s": 6090, "4s": 8090}),
+        ("kdfqwr", "VHQ Кокаин (Колумбия) BOSS", {"1m": 5490, "3m": 9990, "6m": 14990, "12m": 19990}),
+        ("kdf42", "VHQ Кокаин (Колумбия) Magic", {"1m": 5990, "3m": 10490, "6m": 15490, "12m": 20490}),
+        ("kdouwevrf", "VHQ Кокаин (Колумбия) Apple", {"1m": 6190, "3m": 10690, "6m": 15790, "12m": 20890}),
+        ("fweckdf", "Гашиш Ice-o-Lator Rainbow Runtz", {"1m": 2190, "3m": 4090, "6m": 6090, "12m": 8090}),
+        ("kdf917f", "Гашиш Ice-o-Lator Silver Haze", {"1m": 1890, "3m": 3190, "6m": 4690, "12m": 6290}),
+        ("kdmcg3f", "Гашиш Ice-o-Lator Watermelon", {"1m": 1490, "3m": 2890, "6m": 3990, "12m": 5390}),
+        ("knc72df", "Бошки Amnesia Haze", {"1m": 1790, "3m": 3290, "6m": 4790, "12m": 6290}),
+        ("knd92df", "Бошки White Kush", {"1m": 1690, "3m": 3190, "6m": 4690, "12m": 6190}),
+        ("k7204df", "Бошки White Widow", {"1m": 1290, "3m": 2290, "6m": 3290, "12m": 4190}),
+        ("k8344df", "Тримм", {"1m": 390, "2s": 690, "3s": 990, "4s": 1290}),
+        ("k36df", "Лирика 400г", {"1s": 350, "2s": 650, "3s": 950, "4s": 1190}),
+        ("go", "Мефедрон кристаллы VHQ", {"1m": 2190, "3m": 3990, "6m": 5990, "12m": 7990}),
+        ("goplus", "Мефедрон мука VHQ", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("artist", "Альфа-PVP кристаллы VHQ", {"1m": 1790, "3m": 3390, "6m": 4990, "12m": 6590}),
+    ],
+    "spotify": [
+        ("mcle", "Экстази XTC 280mg", {"1s": 690 , "2s": 1290, "3s": 1790, "4s": 2290}),
+        ("kdqecnf", "Экстази XTC PureHeart 250mg", {"1s": 2290, "2s": 4090, "3s": 6090, "4s": 8090}),
+        ("kdfqwr", "VHQ Кокаин (Колумбия) BOSS", {"1m": 5490, "3m": 9990, "6m": 14990, "12m": 19990}),
+        ("kdf42", "VHQ Кокаин (Колумбия) Magic", {"1m": 5990, "3m": 10490, "6m": 15490, "12m": 20490}),
+        ("kdouwevrf", "VHQ Кокаин (Колумбия) Apple", {"1m": 6190, "3m": 10690, "6m": 15790, "12m": 20890}),
+        ("fweckdf", "Гашиш Ice-o-Lator Rainbow Runtz", {"1m": 2190, "3m": 4090, "6m": 6090, "12m": 8090}),
+        ("kdf917f", "Гашиш Ice-o-Lator Silver Haze", {"1m": 1890, "3m": 3190, "6m": 4690, "12m": 6290}),
+        ("kdmcg3f", "Гашиш Ice-o-Lator Watermelon", {"1m": 1490, "3m": 2890, "6m": 3990, "12m": 5390}),
+        ("knc72df", "Бошки Amnesia Haze", {"1m": 1790, "3m": 3290, "6m": 4790, "12m": 6290}),
+        ("knd92df", "Бошки White Kush", {"1m": 1690, "3m": 3190, "6m": 4690, "12m": 6190}),
+        ("k7204df", "Бошки White Widow", {"1m": 1290, "3m": 2290, "6m": 3290, "12m": 4190}),
+        ("k8344df", "Тримм", {"1m": 390, "2s": 690, "3s": 990, "4s": 1290}),
+        ("k36df", "Лирика 400г", {"1s": 350, "2s": 650, "3s": 950, "4s": 1190}),
+        ("go", "Мефедрон кристаллы VHQ", {"1m": 2190, "3m": 3990, "6m": 5990, "12m": 7990}),
+        ("goplus", "Мефедрон мука VHQ", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("artist", "Альфа-PVP кристаллы VHQ", {"1m": 1790, "3m": 3390, "6m": 4990, "12m": 6590}),
+        ("artistpro", "Альфа-PVP Синяя/Зеленая VHQ", {"1m": 2290, "3m": 4390, "6m": 6490, "12m": 8590}),
+        ("dae", "Метамфетамин кристаллы VHQ", {"1m": 3990, "3m": 7990, "6m": 11790, "12m": 15590}),
+        ("wonv", "Амфетамин", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+    ],
+    "claude": [
+        ("kdf42", "VHQ Кокаин (Колумбия) Magic", {"1m": 5990, "3m": 10490, "6m": 15490, "12m": 20490}),
+        ("kdouwevrf", "VHQ Кокаин (Колумбия) Apple", {"1m": 6190, "3m": 10690, "6m": 15790, "12m": 20890}),
+        ("fweckdf", "Гашиш Ice-o-Lator Rainbow Runtz", {"1m": 2190, "3m": 4090, "6m": 6090, "12m": 8090}),
+        ("kdf917f", "Гашиш Ice-o-Lator Silver Haze", {"1m": 1890, "3m": 3190, "6m": 4690, "12m": 6290}),
+        ("kdmcg3f", "Гашиш Ice-o-Lator Watermelon", {"1m": 1490, "3m": 2890, "6m": 3990, "12m": 5390}),
+        ("knc72df", "Бошки Amnesia Haze", {"1m": 1790, "3m": 3290, "6m": 4790, "12m": 6290}),
+        ("knd92df", "Бошки White Kush", {"1m": 1690, "3m": 3190, "6m": 4690, "12m": 6190}),
+        ("k7204df", "Бошки White Widow", {"1m": 1290, "3m": 2290, "6m": 3290, "12m": 4190}),
+        ("k8344df", "Тримм", {"1m": 390, "2s": 690, "3s": 990, "4s": 1290}),
+        ("k36df", "Лирика 400г", {"1s": 350, "2s": 650, "3s": 950, "4s": 1190}),
+        ("go", "Мефедрон кристаллы VHQ", {"1m": 2190, "3m": 3990, "6m": 5990, "12m": 7990}),
+        ("goplus", "Мефедрон мука VHQ", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("artist", "Альфа-PVP кристаллы VHQ", {"1m": 1790, "3m": 3390, "6m": 4990, "12m": 6590}),
+        ("artistpro", "Альфа-PVP Синяя/Зеленая VHQ", {"1m": 2290, "3m": 4390, "6m": 6490, "12m": 8590}),
+        ("dae", "Метамфетамин кристаллы VHQ", {"1m": 3990, "3m": 7990, "6m": 11790, "12m": 15590}),
+        ("wonv", "Амфетамин", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("mcle", "Экстази XTC 280mg", {"1s": 690, "2s": 1290, "3s": 1790, "4s": 2290}),
+        ("kdqecnf", "Экстази XTC PureHeart 250mg", {"1s": 2290, "2s": 4090, "3s": 6090, "4s": 8090}),
+        ("kdfqwr", "VHQ Кокаин (Колумбия) BOSS", {"1m": 5490, "3m": 9990, "6m": 14990, "12m": 19990}),
+    ],
+    "capcut": [
+        ("kdf917f", "Гашиш Ice-o-Lator Silver Haze", {"1m": 1890, "3m": 3190, "6m": 4690, "12m": 6290}),
+        ("kdmcg3f", "Гашиш Ice-o-Lator Watermelon", {"1m": 1490, "3m": 2890, "6m": 3990, "12m": 5390}),
+        ("knc72df", "Бошки Amnesia Haze", {"1m": 1790, "3m": 3290, "6m": 4790, "12m": 6290}),
+        ("knd92df", "Бошки White Kush", {"1m": 1690, "3m": 3190, "6m": 4690, "12m": 6190}),
+        ("k7204df", "Бошки White Widow", {"1m": 1290, "3m": 2290, "6m": 3290, "12m": 4190}),
+        ("k8344df", "Тримм", {"1m": 390, "2s": 690, "3s": 990, "4s": 1290}),
+        ("go", "Мефедрон кристаллы VHQ", {"1m": 2190, "3m": 3990, "6m": 5990, "12m": 7990}),
+        ("goplus", "Мефедрон мука VHQ", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("artist", "Альфа-PVP кристаллы VHQ", {"1m": 1790, "3m": 3390, "6m": 4990, "12m": 6590}),
+        ("artistpro", "Альфа-PVP Синяя/Зеленая VHQ", {"1m": 2290, "3m": 4390, "6m": 6490, "12m": 8590}),
+        ("dae", "Метамфетамин кристаллы VHQ", {"1m": 3990, "3m": 7990, "6m": 11790, "12m": 15590}),
+        ("wonv", "Амфетамин", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("mcle", "Экстази XTC 280mg", {"1s": 690, "2s": 1290, "3s": 1790, "4s": 2290}),
+        ("kdqecnf", "Экстази XTC PureHeart 250mg", {"1s": 2290, "2s": 4090, "3s": 6090, "4s": 8090}),
+        ("kdfqwr", "VHQ Кокаин (Колумбия) BOSS", {"1m": 5490, "3m": 9990, "6m": 14990, "12m": 19990}),
+        ("kdf42", "VHQ Кокаин (Колумбия) Magic", {"1m": 5990, "3m": 10490, "6m": 15490, "12m": 20490}),
+        ("kdouwevrf", "VHQ Кокаин (Колумбия) Apple", {"1m": 6190, "3m": 10690, "6m": 15790, "12m": 20890}),
+        ("fweckdf", "Гашиш Ice-o-Lator Rainbow Runtz", {"1m": 2190, "3m": 4090, "6m": 6090, "12m": 8090}),
+    ],
+    "telegram": [
+        ("k7204df", "Бошки White Widow", {"1m": 1290, "3m": 2290, "6m": 3290, "12m": 4190}),
+        ("k8344df", "Тримм", {"1m": 390, "2s": 690, "3s": 990, "4s": 1290}),
+        ("k36df", "Лирика 400г", {"1s": 350, "2s": 650, "3s": 950, "4s": 1190}),
+        ("go", "Мефедрон кристаллы VHQ", {"1m": 2190, "3m": 3990, "6m": 5990, "12m": 7990}),
+        ("goplus", "Мефедрон мука VHQ", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("artist", "Альфа-PVP кристаллы VHQ", {"1m": 1790, "3m": 3390, "6m": 4990, "12m": 6590}),
+        ("artistpro", "Альфа-PVP Синяя/Зеленая VHQ", {"1m": 2290, "3m": 4390, "6m": 6490, "12m": 8590}),
+        ("dae", "Метамфетамин кристаллы VHQ", {"1m": 3990, "3m": 7990, "6m": 11790, "12m": 15590}),
+        ("wonv", "Амфетамин", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("mcle", "Экстази XTC 280mg", {"1s": 690, "2s": 1290, "3s": 1790, "4s": 2290}),
+        ("kdqecnf", "Экстази XTC PureHeart 250mg", {"1s": 2290, "2s": 4090, "3s": 6090, "4s": 8090}),
+        ("kdfqwr", "VHQ Кокаин (Колумбия) BOSS", {"1m": 5490, "3m": 9990, "6m": 14990, "12m": 19990}),
+        ("kdf42", "VHQ Кокаин (Колумбия) Magic", {"1m": 5990, "3m": 10490, "6m": 15490, "12m": 20490}),
+        ("kdouwevrf", "VHQ Кокаин (Колумбия) Apple", {"1m": 6190, "3m": 10690, "6m": 15790, "12m": 20890}),
+        ("fweckdf", "Гашиш Ice-o-Lator Rainbow Runtz", {"1m": 2190, "3m": 4090, "6m": 6090, "12m": 8090}),
+        ("kdf917f", "Гашиш Ice-o-Lator Silver Haze", {"1m": 1890, "3m": 3190, "6m": 4690, "12m": 6290}),
+        ("kdmcg3f", "Гашиш Ice-o-Lator Watermelon", {"1m": 1490, "3m": 2890, "6m": 3990, "12m": 5390}),
+        ("knc72df", "Бошки Amnesia Haze", {"1m": 1790, "3m": 3290, "6m": 4790, "12m": 6290}),
+        ("knd92df", "Бошки White Kush", {"1m": 1690, "3m": 3190, "6m": 4690, "12m": 6190}),
+    ],
+    "chatgpt": [
+        ("go",        "Мефедрон кристаллы VHQ",         {"1m": 2190,  "3m": 3990,  "6m": 5990,   "12m": 7990}),
+        ("goplus",    "Мефедрон мука VHQ",    {"1m": 1490,  "3m": 2790,  "6m": 4090,   "12m": 5390}),
+        ("artist",    "Альфа-PVP кристаллы VHQ",     {"1m": 1790,  "3m": 3390,  "6m": 4990,  "12m": 6590}),
+        ("artistpro", "Альфа-PVP Синяя/Зеленая VHQ", {"1m": 2290,  "3m": 4390,  "6m": 6490,  "12m": 8590}),
+        ("dae", "Метамфетамин кристаллы VHQ", {"1m": 3990, "3m": 7990, "6m": 11790, "12m": 15590}),
+        ("wonv", "Амфетамин", {"1m": 1490, "3m": 2790, "6m": 4090, "12m": 5390}),
+        ("mcle", "Экстази XTC 280mg", {"1s": 690 , "2s": 1290, "3s": 1790, "4s": 2290}),
+        ("kdqecnf", "Экстази XTC PureHeart 250mg", {"1s": 2290, "2s": 4090, "3s": 6090, "4s": 8090}),
+        ("kdfqwr", "VHQ Кокаин (Колумбия) BOSS", {"1m": 5490, "3m": 9990, "6m": 14990, "12m": 19990}),
+        ("kdf42", "VHQ Кокаин (Колумбия) Magic", {"1m": 5990, "3m": 10490, "6m": 15490, "12m": 20490}),
+        ("kdouwevrf", "VHQ Кокаин (Колумбия) Apple", {"1m": 6190, "3m": 10690, "6m": 15790, "12m": 20890}),
+        ("fweckdf", "Гашиш Ice-o-Lator Rainbow Runtz", {"1m": 2190, "3m": 4090, "6m": 6090, "12m": 8090}),
+        ("kdf917f", "Гашиш Ice-o-Lator Silver Haze", {"1m": 1890, "3m": 3190, "6m": 4690, "12m": 6290}),
+        ("kdmcg3f", "Гашиш Ice-o-Lator Watermelon", {"1m": 1490, "3m": 2890, "6m": 3990, "12m": 5390}),
+        ("knc72df", "Бошки Amnesia Haze", {"1m": 1790, "3m": 3290, "6m": 4790, "12m": 6290}),
+        ("knd92df", "Бошки White Kush", {"1m": 1690, "3m": 3190, "6m": 4690, "12m": 6190}),
+        ("k7204df", "Бошки White Widow", {"1m": 1290, "3m": 2290, "6m": 3290, "12m": 4190}),
+        ("k8344df", "Тримм", {"1m": 390, "2s": 690, "3s": 990, "4s": 1290}),
+        ("k36df", "Лирика 400г", {"1s": 350, "2s": 650, "3s": 950, "4s": 1190}),
+    ],
+}
+
+PLAN_MAP = {
+    srv: {code: (title, rub) for code, title, rub in plans}
+    for srv, plans in PLANS.items()
+}
+
+
+def get_plan(service, plan, period):
+    p = PLAN_MAP.get(service, {}).get(plan)
+    if not p:
+        return None
+    title, rub = p
+    if period not in rub:
+        return None
+    return title, rub[period]
+
+
+# ============================================================
+#  Города рашки
+# ============================================================
+CITIES = [
+    "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
+    "Нижний Новгород", "Челябинск", "Красноярск", "Самара", "Уфа",
+    "Ростов-на-Дону", "Омск", "Краснодар", "Воронеж", "Волгоград",
+    "Пермь", "Саратов", "Тюмень", "Тольятти", "Барнаул",
+    "Ижевск", "Ульяновск", "Иркутск", "Хабаровск", "Ярославль",
+    "Владивосток", "Махачкала", "Томск", "Оренбург", "Кемерово",
+    "Новокузнецк", "Рязань", "Астрахань", "Пенза", "Липецк",
+    "Киров", "Чебоксары", "Балашиха", "Калининград", "Тула",
+    "Курск", "Севастополь", "Сочи", "Ставрополь", "Улан-Удэ",
+    "Тверь", "Магнитогорск", "Иваново", "Брянск", "Белгород",
+    "Сургут", "Владимир", "Нижний Тагил", "Архангельск", "Чита",
+    "Калуга", "Смоленск", "Волжский", "Череповец", "Вологда",
+    "Саранск", "Курган", "Орёл", "Подольск", "Грозный",
+    "Якутск", "Мурманск", "Тамбов", "Стерлитамак", "Петрозаводск",
+    "Кострома", "Нижневартовск", "Новороссийск", "Йошкар-Ола", "Химки",
+    "Таганрог", "Комсомольск-на-Амуре", "Сыктывкар", "Нальчик", "Нижнекамск",
+    "Шахты", "Дзержинск", "Орск", "Братск", "Ангарск",
+    "Благовещенск", "Энгельс", "Королёв", "Великий Новгород", "Старый Оскол",
+    "Псков", "Мытищи", "Люберцы", "Южно-Сахалинск", "Армавир",
+    "Рыбинск", "Бийск", "Северодвинск", "Балаково", "Абакан",
+    "Норильск", "Уссурийск", "Миасс", "Златоуст", "Копейск",
+    "Кисловодск", "Пятигорск", "Георгиевск", "Нефтекамск", "Октябрьский",
+    "Салават", "Новочебоксарск", "Хасавюрт", "Кызыл", "Обнинск",
+    "Серпухов", "Ногинск", "Щёлково", "Жуковский", "Реутов",
+    "Одинцово", "Домодедово", "Раменское", "Пушкино", "Сергиев Посад",
+    "Дубна", "Коломна", "Электросталь", "Дмитров", "Павловский Посад",
+    "Красногорск", "Истра", "Наро-Фоминск", "Клин", "Кашира",
+    "Ступино", "Воскресенск", "Егорьевск", "Новомосковск", "Узловая",
+    "Донской", "Алексин", "Щёкино", "Гатчина", "Выборг",
+    "Всеволожск", "Сосновый Бор", "Кириши", "Волхов", "Тихвин",
+    "Кингисепп", "Ломоносов", "Пушкин", "Петергоф", "Колпино",
+    "Кронштадт", "Сестрорецк", "Зеленогорск", "Адлер", "Анапа",
+    "Геленджик", "Туапсе", "Крымск", "Славянск-на-Кубани", "Темрюк",
+    "Ейск", "Тимашёвск", "Кропоткин", "Тихорецк", "Лабинск",
+    "Усть-Лабинск", "Белореченск",
+]
+
+# ============================================================
+#  промики
+# ============================================================
+PROMOS = {"GIVE400": 400}
+
+# ============================================================
+#  отзывы (надо редачнуть)
+# ============================================================
+REVIEWS = [
+    "Качество чувствуется с первых секунд — всё сделано на совесть.",
+    "Даже не думал, что покупка окажется настолько удачной.",
+    "Всё продумано до мелочей, пользоваться невероятно удобно.",
+    "Уровень исполнения приятно удивил, явно выше среднего.",
+    "Очень довольна: и качество, и внимание к деталям на высоте.",
+    "Товар произвёл впечатление сразу, как только я его увидел.",
+    "Приятно удивлён — всё аккуратно, надёжно и без единого изъяна.",
+    "Ни разу не пожалел о покупке, качество действительно отличное.",
+    "Всё настолько продуманно, что пользоваться легко без подсказок.",
+    "Покупка стоящая: и удобно, и качественно, и выглядит достойно.",
+    "Качество превосходное, пользоваться легко и комфортно.",
+    "Осталась в восторге от того, как всё сделано.",
+    "Товар достойный, полностью соответствует высокому уровню.",
+    "Очень удобно, качественно и без лишних сложностей.",
+    "Всё работает именно так, как и должно, — без нареканий.",
+    "Покупкой полностью удовлетворена, качество радует каждый день.",
+    "Сделано с умом, пользоваться приятно и удобно.",
+    "Качество на пять, придраться абсолютно не к чему.",
+    "Всё выглядит и ощущается на порядок лучше ожидаемого.",
+    "Отличный выбор — надёжно, удобно и аккуратно.",
+    "Покупка превзошла все мои ожидания, остался только позитив.",
+    "Всё настолько качественно, что не хочется искать недостатки.",
+    "Очень классно, всё продумано и сделано добротно.",
+    "Товар надёжный, качественный и очень удобный.",
+    "Довольна покупкой, всё просто и комфортно.",
+    "Качество чувствуется, пользоваться одно удовольствие.",
+    "Всё отлично, уровень явно выше среднего.",
+    "Покупка удачная, ни разу не разочаровался.",
+    "Всё аккуратно, продуманно и качественно.",
+    "Очень доволен, всё сделано на совесть.",
+    "Товар превосходный, всё радует без исключения.",
+    "Качество супер, удобство на высоте.",
+    "Покупка оправдала себя на все сто процентов.",
+    "Всё продумано, надёжно и приятно.",
+    "Осталась довольна, качество выше всяких похвал.",
+    "Товар хороший, всё сделано на уровне.",
+    "Всё удобно, качественно и современно.",
+    "Покупкой доволен, всё продумано до мелочей.",
+    "Качество отличное, пользоваться комфортно.",
+    "Всё надёжно, аккуратно и удобно.",
+    "Очень качественно, всё на высшем уровне.",
+    "Товар достойный, рекомендую без сомнений.",
+    "Покупка радует, всё сделано с душой.",
+    "Всё просто, удобно и качественно.",
+    "Качество превосходное, остался только позитив.",
+    "Очень удобно, всё продумано и надёжно.",
+    "Товар отличный, всё на пять.",
+    "Покупкой полностью довольна, качество супер.",
+    "Всё аккуратно, качественно и удобно.",
+    "Очень классно, всё сделано на совесть.",
+    "Товар надёжный, качество чувствуется.",
+    "Всё на высоте, пользоваться приятно.",
+    "Покупка отличная, всё радует.",
+    "Качество радует, удобство на уровне.",
+    "Всё продумано, качественно и комфортно.",
+    "Очень доволен, всё сделано аккуратно.",
+    "Товар достойный, всё продумано.",
+    "Покупкой довольна, качество превосходное.",
+    "Всё удобно, надёжно и качественно.",
+    "Очень качественно, пользоваться легко.",
+    "Товар отличный, всё на высшем уровне.",
+    "Всё продумано, аккуратно и удобно.",
+    "Покупка удачная, качество радует.",
+    "Качество отличное, всё сделано с умом.",
+    "Всё надёжно, удобно и приятно.",
+    "Очень довольна, всё на пять.",
+    "Товар хороший, всё качественно.",
+    "Покупкой доволен, всё удобно.",
+    "Всё продумано, качественно и надёжно.",
+    "Очень классно, всё на уровне.",
+    "Товар отличный, рекомендую.",
+    "Всё аккуратно, удобно и качественно.",
+    "Покупка радует, всё супер.",
+    "Качество превосходное, всё отлично.",
+    "Всё на высоте, удобно и продуманно.",
+    "Очень довольна, качество супер.",
+    "Товар достойный, всё радует.",
+    "Покупкой довольна, всё качественно.",
+    "Всё удобно, надёжно и продуманно.",
+    "Очень качественно, всё на отлично.",
+    "Товар отличный, всё удобно.",
+    "Покупка превосходная, всё на высшем уровне.",
+    "Качество на максимуме, пользоваться одно удовольствие.",
+]
+
+# ============================================================
+#  fsm/
+# ============================================================
+class TopUpFSM(StatesGroup):
+    waiting_amount  = State()
+    choosing_method = State()
+
+class AdminFSM(StatesGroup):
+    waiting_user_id      = State()
+    waiting_amount       = State()
+    waiting_ticket_reply = State()
+
+# ============================================================
+#  утилки
+# ============================================================
+def fmt_money(v):
+    if float(v).is_integer():
+        return str(int(v))
+    return f"{v:.2f}".replace(".", ",")
+
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+
+def codes_to_text(codes):
+    if not codes:
+        return "—"
+    return "\n".join(f"<code>{c}</code>" for c in codes)
+
+
+def make_order_id(user_id: int) -> str:
+    return f"u{user_id}_{int(time.time())}"
+
+
+def webapp_enabled() -> bool:
+    return bool(WEBAPP_URL) and "your-ngrok" not in WEBAPP_URL
+
+# ============================================================
+#  клавы
+# ============================================================
+def kb_open_app(user_id: int = 0):
+    url = WEBAPP_URL
+    if user_id:
+        url = f"{WEBAPP_URL}/?user_id={user_id}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Открыть магазин", web_app=WebAppInfo(url=url))],
+    ])
+
+
+def kb_wallet():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Пополнить баланс",
+                              callback_data="topup_start")],
+    ])
+
+
+def kb_choose_method():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 СБП",       callback_data="topup_method_sbp")],
+        [InlineKeyboardButton(text="💎 CryptoBot", callback_data="topup_method_crypto")],
+        [InlineKeyboardButton(text="💸 Перевод",   callback_data="topup_method_transfer")],
+    ])
+
+
+def kb_back_to_wallet():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_wallet")],
+    ])
+
+
+def kb_admin():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика",         callback_data="adm_stats")],
+        [InlineKeyboardButton(text="📨 Заявки в поддержку", callback_data="adm_tickets")],
+        [InlineKeyboardButton(text="💳 Начислить баланс",   callback_data="adm_credit")],
+    ])
+
+
+def kb_tickets_list(tickets):
+    rows = []
+    for t in tickets:
+        msg = t["message"].replace("\n", " ")
+        if len(msg) > 30:
+            msg = msg[:27] + "…"
+        rows.append([InlineKeyboardButton(
+            text=f"#{t['id']} · {t['username'] or t['user_id']} · {msg}",
+            callback_data=f"adm_tk_view_{t['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_ticket_view(ticket_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Ответить",
+                              callback_data=f"adm_tk_reply_{ticket_id}")],
+        [InlineKeyboardButton(text="⬅️ К списку", callback_data="adm_tickets")],
+    ])
+
+# ============================================================
+#вебка
+# ============================================================
+async def wa_index(request):
+    for name in ("Base.html", "base.html", "index.html"):
+        p = os.path.join(WEBAPP_DIR, name)
+        if os.path.exists(p):
+            return web.FileResponse(p)
+    files = os.listdir(WEBAPP_DIR) if os.path.isdir(WEBAPP_DIR) else []
+    log.error("WebApp HTML не найден. Файлы в webapp/: %s", files)
+    return web.Response(
+        text=f"HTML не найден в {WEBAPP_DIR}.\nФайлы: {files}\nОжидается: Base.html",
+        status=404,
+    )
+
+
+async def wa_user(request):
+    try:
+        uid = int(request.match_info["user_id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "bad id"}, status=400)
+    u = await db_get_user(uid)
+    if not u:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(u)
+
+
+async def wa_purchases(request):
+    try:
+        uid = int(request.match_info["user_id"])
+    except (ValueError, KeyError):
+        return web.json_response({"error": "bad id"}, status=400)
+    items = await db_get_purchases(uid, 50)
+    return web.json_response(items)
+
+
+async def wa_catalog(request):
+    result = {}
+    for code, name in SERVICES:
+        plans = []
+        for plan_code, title, prices in PLANS.get(code, []):
+            pill_list = []
+            for period_code, period_name in PERIODS:
+                price = prices.get(period_code)
+                if price is None:
+                    continue
+                pill_list.append({
+                    "period": period_name,
+                    "period_code": period_code,
+                    "price": fmt_money(price),
+                })
+            plans.append({"code": plan_code, "title": title, "prices": pill_list})
+        result[code] = {"name": name, "plans": plans}
+    return web.json_response(result)
+
+
+async def wa_reviews(request):
+    try:
+        page = int(request.query.get("page", 0))
+    except ValueError:
+        page = 0
+    total = len(REVIEWS)
+    per_page = 10
+    start = page * per_page
+    end = start + per_page
+    return web.json_response({
+        "total": total,
+        "page": page,
+        "has_more": end < total,
+        "reviews": REVIEWS[start:end],
+    })
+
+
+async def wa_cities_search(request):
+    q = (request.query.get("q") or "").strip().lower()
+    if not q:
+        return web.json_response(CITIES[:30])
+    result = [c for c in CITIES if q in c.lower()][:50]
+    return web.json_response(result)
+
+
+async def wa_set_city(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    user_id = data.get("user_id")
+    city = (data.get("city") or "").strip()
+    if not user_id or not city:
+        return web.json_response({"error": "missing params"}, status=400)
+
+    uid = int(user_id)
+    if not await db_get_user(uid):
+        return web.json_response({"error": "user not found"}, status=404)
+
+    if len(city) > 60:
+        city = city[:60]
+
+    await db_set_city(uid, city)
+    u = await db_get_user(uid) or {}
+    return web.json_response({"ok": True, "user": u})
+
+
+async def wa_buy(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    user_id = data.get("user_id")
+    service = data.get("service")
+    plan    = data.get("plan")
+    period  = data.get("period")
+
+    if not all([user_id, service, plan, period]):
+        return web.json_response({"error": "missing params"}, status=400)
+
+    res = await perform_purchase(int(user_id), service, plan, period)
+    if not res.get("ok"):
+        return web.json_response({"error": res.get("error")}, status=400)
+
+    u = await db_get_user(int(user_id)) or {}
+    res["user"] = u
+    return web.json_response(res)
+
+
+async def wa_support(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    user_id = data.get("user_id")
+    text = (data.get("message") or "").strip()
+    if not user_id or not text:
+        return web.json_response({"error": "missing params"}, status=400)
+
+    uid = int(user_id)
+    u = await db_get_user(uid)
+    if not u:
+        return web.json_response({"error": "user not found"}, status=404)
+
+    username = u.get("username") or u.get("full_name") or str(uid)
+    ticket_id = await db_create_ticket(uid, username, text)
+
+    safe_text = html.escape(text)
+    city_line = f"\n🏙 {html.escape(u.get('city') or '—')}" if u.get('city') else ""
+    for admin_id in ADMIN_IDS:
+        try:
+            await send_photo_to_user(
+                admin_id,
+                f"📨 <b>Новая заявка №{ticket_id}</b>\n\n"
+                f"👤 {html.escape(username)} (<code>{uid}</code>){city_line}\n"
+                f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"💬 {safe_text}",
+                InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✍️ Ответить",
+                                          callback_data=f"adm_tk_reply_{ticket_id}")],
+                ]),
+            )
+        except Exception as e:
+            log.warning("failed to notify admin %s: %s", admin_id, e)
+
+    return web.json_response({"ok": True, "ticket_id": ticket_id})
+
+
+async def wa_promo(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    user_id = data.get("user_id")
+    code = (data.get("code") or "").strip().upper()
+    if not user_id or not code:
+        return web.json_response({"error": "missing params"}, status=400)
+
+    uid = int(user_id)
+
+    if code not in PROMOS:
+        return web.json_response({"error": "Такого промокода не существует"}, status=400)
+    if await db_promo_is_used(code):
+        return web.json_response({"error": "Этот промокод уже использован"}, status=400)
+
+    amount = PROMOS[code]
+    if not await db_get_user(uid):
+        return web.json_response({"error": "Пользователь не найден"}, status=404)
+
+    await db_add_balance(uid, amount)
+    await db_mark_promo_used(code, uid, amount)
+
+    u = await db_get_user(uid) or {}
+    return web.json_response({"ok": True, "amount": amount, "user": u})
+
+
+async def wa_ref_withdraw(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    user_id = data.get("user_id")
+    if not user_id:
+        return web.json_response({"error": "missing params"}, status=400)
+
+    uid = int(user_id)
+    moved = await db_move_ref_to_main(uid)
+    if moved <= 0:
+        return web.json_response({"error": "Реферальный баланс пуст"}, status=400)
+
+    u = await db_get_user(uid) or {}
+    return web.json_response({"ok": True, "moved": moved, "user": u})
+
+
+async def wa_start_topup(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    user_id = data.get("user_id")
+    if not user_id:
+        return web.json_response({"error": "missing user_id"}, status=400)
+
+    uid = int(user_id)
+    u = await db_get_user(uid)
+    if not u:
+        return web.json_response({"error": "user not found"}, status=404)
+
+    key = StorageKey(bot_id=bot.id, chat_id=uid, user_id=uid)
+    await dp.storage.set_state(key, TopUpFSM.waiting_amount)
+    await dp.storage.set_data(key, {})
+
+    try:
+        await send_photo_to_user(
+            uid,
+            "💰 Введи сумму пополнения в <b>рублях</b> (только число).\n"
+            f"Минимум: <b>{CACTUS_MIN_AMOUNT} ₽</b>\n"
+            "Например: <code>500</code>",
+            kb_back_to_wallet(),
+        )
+    except Exception as e:
+        log.exception("wa_start_topup send failed")
+        return web.json_response({"error": str(e)}, status=500)
+
+    return web.json_response({"ok": True})
+
+
+async def webapp_runner():
+    app = web.Application()
+    app.router.add_get("/", wa_index)
+    app.router.add_get("/api/user/{user_id}", wa_user)
+    app.router.add_get("/api/purchases/{user_id}", wa_purchases)
+    app.router.add_get("/api/catalog", wa_catalog)
+    app.router.add_get("/api/reviews", wa_reviews)
+    app.router.add_get("/api/cities/search", wa_cities_search)
+    app.router.add_post("/api/buy", wa_buy)
+    app.router.add_post("/api/support", wa_support)
+    app.router.add_post("/api/promo", wa_promo)
+    app.router.add_post("/api/ref_withdraw", wa_ref_withdraw)
+    app.router.add_post("/api/start_topup", wa_start_topup)
+    app.router.add_post("/api/set_city", wa_set_city)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEBAPP_PORT)
+    await site.start()
+    print(f"🌐 Web App: http://localhost:{WEBAPP_PORT}")
+    print(f"🔗 Публичный URL: {WEBAPP_URL}")
+
+
+async def start_webapp_if_ready():
+    if not webapp_enabled():
+        print("⚠️  WEBAPP_URL не настроен — мини-апп отключён")
+        return
+    try:
+        await webapp_runner()
+    except Exception as e:
+        log.exception("webapp runner failed: %s", e)
+
+
+# ============================================================
+#  /start
+# ============================================================
+WELCOME_TEXT = (
+    "👋 <b>Admiral Shop</b> — магазин №1 по продаже готовых подписок.\n"
+    "\n"
+    "🛒 <b>Весь магазин работает в приложении.</b>\n"
+    "\n"
+    "Как открыть:\n"
+    "• Нажми синюю кнопку <b>«🛒 Магазин»</b> слева от поля ввода\n"
+    "• Или кнопку <b>«🚀 Открыть магазин»</b> ниже\n"
+    "\n"
+    "💳 Этот бот нужен только для приёма оплаты."
+)
+
+
+@dp.message(CommandStart(deep_link=True))
+async def cmd_start_deeplink(message: Message, state: FSMContext, command: CommandObject):
+    await state.clear()
+    user = message.from_user
+    args = (command.args or "").strip()
+
+    existing = await db_get_user(user.id)
+    if existing is None:
+        await db_create_user(user.id, user.username, user.full_name)
+    else:
+        await db_refresh_profile(user.id, user.username, user.full_name)
+
+    if args == "topup":
+        await state.set_state(TopUpFSM.waiting_amount)
+        await send_photo_msg(
+            message,
+            "💰 Введи сумму пополнения в <b>рублях</b> (только число).\n"
+            f"Минимум: <b>{CACTUS_MIN_AMOUNT} ₽</b>\n"
+            "Например: <code>500</code>",
+            kb_back_to_wallet(),
+        )
+        return
+
+    if args.startswith("ref_"):
+        try:
+            referrer_id = int(args[4:])
+            if referrer_id == user.id:
+                referrer_id = None
+        except ValueError:
+            referrer_id = None
+
+        if referrer_id:
+            async with _users_lock:
+                def _bind():
+                    users = _read_users_sync()
+                    if user.id in users and not users[user.id].get("referrer_id"):
+                        users[user.id]["referrer_id"] = referrer_id
+                        _write_users_sync(users)
+                await asyncio.to_thread(_bind)
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    "🎉 По твоей ссылке зарегистрировался новый пользователь!",
+                )
+            except Exception:
+                pass
+
+        await send_photo_msg(message, WELCOME_TEXT, kb_open_app(user.id))
+        return
+
+    await send_photo_msg(message, WELCOME_TEXT, kb_open_app(user.id))
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    user = message.from_user
+
+    existing = await db_get_user(user.id)
+    if existing is None:
+        await db_create_user(user.id, user.username, user.full_name)
+    else:
+        await db_refresh_profile(user.id, user.username, user.full_name)
+
+    await send_photo_msg(message, WELCOME_TEXT, kb_open_app(user.id))
+
+
+# ============================================================
+#  ПОПОЛНЕНИЕ
+# ============================================================
+@dp.callback_query(F.data == "topup_start")
+async def cb_topup_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.set_state(TopUpFSM.waiting_amount)
+    await show(
+        call,
+        "💰 Введи сумму пополнения в <b>рублях</b> (только число).\n"
+        f"Минимум: <b>{CACTUS_MIN_AMOUNT} ₽</b>\n"
+        "Например: <code>500</code>",
+        kb_back_to_wallet(),
+    )
+
+
+@dp.callback_query(F.data == "back_to_wallet")
+async def cb_back_to_wallet(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    u = await db_get_user(call.from_user.id) or {}
+    await show(
+        call,
+        "💳 <b>Кошелёк</b>\n\n"
+        f"├ Основной баланс: <b>{fmt_money(u.get('balance', 0))} ₽</b>\n"
+        f"╰ Реферальный баланс: {fmt_money(u.get('ref_balance', 0))} ₽\n\n"
+        "Пополнение — через <b>СБП</b>, <b>CryptoBot</b> или <b>Перевод</b>.",
+        kb_wallet(),
+    )
+
+
+@dp.message(TopUpFSM.waiting_amount)
+async def msg_topup_amount(message: Message, state: FSMContext):
+    try:
+        amount = float((message.text or "").replace(",", ".").strip())
+        if amount < CACTUS_MIN_AMOUNT:
+            raise ValueError
+    except ValueError:
+        return await send_photo_msg(
+            message,
+            f"❌ Введи корректную сумму (минимум {CACTUS_MIN_AMOUNT} ₽), "
+            "например: <code>500</code>",
+            kb_back_to_wallet(),
+        )
+
+    await state.update_data(amount=amount)
+    await state.set_state(TopUpFSM.choosing_method)
+
+    await send_photo_msg(
+        message,
+        f"💰 Сумма: <b>{fmt_money(amount)} ₽</b>\n\nВыбери способ оплаты:",
+        kb_choose_method(),
+    )
+
+
+@dp.callback_query(TopUpFSM.choosing_method, F.data == "topup_method_sbp")
+async def cb_topup_sbp(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    data = await state.get_data()
+    amount = data.get("amount")
+    if not amount:
+        await state.clear()
+        return await show(call, "❌ Сессия истекла, начни заново.",
+                         InlineKeyboardMarkup(inline_keyboard=[
+                             [InlineKeyboardButton(text="➕ Пополнить",
+                                                   callback_data="topup_start")],
+                         ]))
+
+    uid = call.from_user.id
+    order_id = make_order_id(uid)
+    description = f"Пополнение баланса на {fmt_money(amount)} ₽"
+
+    result = await cactus_create_payment(amount, order_id, description)
+    if result.get("status") != "success":
+        await state.clear()
+        err = result.get("response", "неизвестная ошибка")
+        return await show(
+            call,
+            f"❌ Ошибка создания платежа: <code>{err}</code>\n"
+            "Попробуй позже.",
+            kb_wallet(),
+        )
+
+    resp = result.get("response") or {}
+    pay_url = resp.get("url")
+    cact_id = resp.get("id")
+
+    if not pay_url:
+        await state.clear()
+        return await show(call, "❌ CactusPay не вернул ссылку на оплату.", kb_wallet())
+
+    req_id = await db_create_topup_sbp(uid, order_id, amount, cact_id, pay_url)
+    await state.clear()
+
+    await show(
+        call,
+        f"💳 <b>Оплата через СБП</b>\n\n"
+        f"💰 Сумма: <b>{fmt_money(amount)} ₽</b>\n"
+        f"🆔 Номер: <code>{order_id}</code>\n\n"
+        "1️⃣ Нажми кнопку <b>«Оплатить по СБП»</b> ниже.\n"
+        "2️⃣ Оплати по СБП.\n"
+        "3️⃣ Вернись сюда и нажми <b>«🔄 Я оплатил / Проверить»</b>.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Оплатить по СБП", url=pay_url)],
+            [InlineKeyboardButton(text="🔄 Я оплатил / Проверить",
+                                  callback_data=f"topup_check_{req_id}")],
+        ]),
+    )
+
+
+@dp.callback_query(TopUpFSM.choosing_method, F.data == "topup_method_crypto")
+async def cb_topup_crypto(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    data = await state.get_data()
+    amount = data.get("amount")
+    if not amount:
+        await state.clear()
+        return await show(call, "❌ Сессия истекла, начни заново.",
+                         InlineKeyboardMarkup(inline_keyboard=[
+                             [InlineKeyboardButton(text="➕ Пополнить",
+                                                   callback_data="topup_start")],
+                         ]))
+
+    try:
+        invoice = await crypto.create_invoice(
+            amount=amount,
+            fiat="RUB",
+            currency_type="fiat",
+            description=f"Пополнение баланса на {fmt_money(amount)} ₽",
+            expires_in=3600,
+        )
+        pay_url = invoice.bot_invoice_url
+        invoice_id = invoice.invoice_id
+    except Exception as e:
+        await state.clear()
+        return await show(call, f"❌ Ошибка создания счёта: <code>{e}</code>", kb_wallet())
+
+    req_id = await db_create_topup_crypto(call.from_user.id, invoice_id, amount, pay_url)
+    await state.clear()
+
+    await show(
+        call,
+        f"💎 <b>Оплата через CryptoBot</b>\n\n"
+        f"💰 Сумма: <b>{fmt_money(amount)} ₽</b>\n\n"
+        "1️⃣ Нажми кнопку <b>«Оплатить в CryptoBot»</b> ниже.\n"
+        "2️⃣ Выбери удобную криптовалюту и оплати.\n"
+        "3️⃣ Вернись сюда и нажми <b>«🔄 Я оплатил / Проверить»</b>.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Оплатить в CryptoBot", url=pay_url)],
+            [InlineKeyboardButton(text="🔄 Я оплатил / Проверить",
+                                  callback_data=f"topup_check_{req_id}")],
+        ]),
+    )
+
+
+@dp.callback_query(TopUpFSM.choosing_method, F.data == "topup_method_transfer")
+async def cb_topup_transfer(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await show(
+        call,
+        "Для совершения оплаты методом перевода, просим вас написать оператору.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Написать оператору",
+                                  url=f"https://t.me/{SUPPORT_USERNAME}")],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("topup_check_"))
+async def cb_topup_check(call: CallbackQuery):
+    await call.answer()
+    try:
+        req_id = int(call.data.split("_")[-1])
+    except ValueError:
+        return
+
+    req = await db_get_topup_by_id(req_id)
+    if not req:
+        return await call.answer("Заявка не найдена", show_alert=True)
+    if req["user_id"] != call.from_user.id:
+        return await call.answer("Это не твоя заявка", show_alert=True)
+    if req["status"] == "approved":
+        return await call.answer("✅ Платёж уже зачислен", show_alert=True)
+
+    system = req.get("system") or "sbp"
+    paid_amount = None
+
+    if system == "sbp":
+        result = await cactus_get_payment(req["order_id"])
+        if result.get("status") != "success":
+            return await call.answer(
+                "⏳ Платёж ещё не подтверждён. Попробуй через минуту.",
+                show_alert=True,
+            )
+        resp = result.get("response") or {}
+        if (resp.get("status") or "").upper() != "ACCEPT":
+            return await call.answer(
+                "⏳ Платёж ещё не подтверждён. Попробуй через минуту.",
+                show_alert=True,
+            )
+        try:
+            paid_amount = float(str(resp.get("amount") or req["amount"]))
+        except (ValueError, TypeError):
+            paid_amount = float(req["amount"])
+
+    elif system == "crypto":
+        try:
+            invoices = await crypto.get_invoices(invoice_ids=req["invoice_id"])
+        except Exception as e:
+            return await call.answer(f"Ошибка: {e}", show_alert=True)
+
+        items = invoices if isinstance(invoices, list) else getattr(invoices, "items", [])
+        if not items:
+            return await call.answer("Счёт ещё не оплачен.", show_alert=True)
+        inv = items[0]
+        if inv.status != "paid":
+            return await call.answer(
+                f"⏳ Статус: {inv.status}. Попробуй ещё раз через минуту.",
+                show_alert=True,
+            )
+        paid_amount = float(req["amount"])
+
+    else:
+        return await call.answer("Неизвестная система оплаты", show_alert=True)
+
+    if paid_amount is None:
+        return await call.answer("Не удалось определить сумму", show_alert=True)
+
+    uid = call.from_user.id
+    await db_set_topup_status(req_id, "approved")
+    await db_add_balance(uid, paid_amount)
+
+    user = await db_get_user(uid)
+    if user and user.get("referrer_id"):
+        bonus = round(paid_amount * REFERRAL_PERCENT / 100, 2)
+        await db_add_balance(user["referrer_id"], bonus, to_ref=True)
+        try:
+            await bot.send_message(
+                user["referrer_id"],
+                f"💸 Реферальное начисление: <b>+{fmt_money(bonus)} ₽</b> "
+                "с пополнения твоего реферала.",
+            )
+        except Exception:
+            pass
+
+    u = await db_get_user(uid) or {}
+    kb_after_pay = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🚀 Вернуться в магазин",
+            web_app=WebAppInfo(url=f"{WEBAPP_URL}/?user_id={uid}")
+        )],
+    ])
+    await show(
+        call,
+        f"✅ <b>Платёж подтверждён!</b>\n\n"
+        f"💰 Зачислено: <b>+{fmt_money(paid_amount)} ₽</b>\n"
+        f"🏦 Твой баланс: <b>{fmt_money(u.get('balance', 0))} ₽</b>\n\n"
+        "Возвращайся в магазин — там можно купить подписку.",
+        kb_after_pay,
+    )
+
+
+# ============================================================
+#  АДМИНКА
+# ============================================================
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await send_photo_msg(message, "🛠 <b>Админ-панель</b>", kb_admin())
+
+
+@dp.callback_query(F.data == "adm_back")
+async def cb_adm_back(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    await state.clear()
+    await call.answer()
+    await show(call, "🛠 <b>Админ-панель</b>", kb_admin())
+
+
+@dp.callback_query(F.data == "adm_stats")
+async def cb_adm_stats(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    await call.answer()
+
+    s = await db_stats()
+    top_text = "\n".join(
+        f"{i}. {r['username'] or r['full_name']} (<code>{r['user_id']}</code>) — "
+        f"<b>{r['invited']}</b> реф."
+        for i, r in enumerate(s["top_refs"], 1)
+    ) or "—"
+
+    await show(
+        call,
+        "📊 <b>Статистика магазина</b>\n\n"
+        f"👥 Всего пользователей: <b>{s['total_users']}</b>\n"
+        f"🛒 Всего покупок: <b>{s['total_purchases']}</b>\n"
+        f"💰 Оборот: <b>{fmt_money(s['turnover'])} ₽</b>\n\n"
+        "🏆 <b>Топ-5 рефереров:</b>\n"
+        f"{top_text}",
+        kb_admin(),
+    )
+
+
+@dp.callback_query(F.data == "adm_tickets")
+async def cb_adm_tickets(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    await call.answer()
+
+    tickets = await db_get_new_tickets(20)
+    if not tickets:
+        return await show(call,
+                          "📨 <b>Заявки в поддержку</b>\n\nНовых заявок нет.",
+                          kb_admin())
+
+    await show(
+        call,
+        f"📨 <b>Заявки в поддержку</b>\n\nНовых: <b>{len(tickets)}</b>\n"
+        "Нажми на заявку, чтобы открыть:",
+        kb_tickets_list(tickets),
+    )
+
+
+@dp.callback_query(F.data.startswith("adm_tk_view_"))
+async def cb_adm_ticket_view(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    await call.answer()
+    try:
+        tid = int(call.data.split("_")[-1])
+    except ValueError:
+        return
+
+    t = await db_get_ticket(tid)
+    if not t:
+        return await show(call, "❌ Заявка не найдена.", kb_admin())
+
+    status_emoji = "🆕" if t["status"] == "new" else "✅"
+    safe_msg = html.escape(t["message"])
+
+    text = (
+        f"📨 <b>Заявка №{t['id']}</b> {status_emoji}\n\n"
+        f"👤 {html.escape(t['username'] or '')} (<code>{t['user_id']}</code>)\n"
+        f"📅 {t['created_at']}\n"
+        f"📌 Статус: <b>{t['status']}</b>\n\n"
+        f"💬 <b>Сообщение:</b>\n{safe_msg}"
+    )
+
+    if t["status"] == "answered" and t["admin_reply"]:
+        text += (
+            f"\n\n📤 <b>Ответ отправлен</b> ({t['replied_at']}):\n"
+            f"{html.escape(t['admin_reply'])}"
+        )
+
+    await show(call, text, kb_ticket_view(t["id"]))
+
+
+@dp.callback_query(F.data.startswith("adm_tk_reply_"))
+async def cb_adm_ticket_reply(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    await call.answer()
+    try:
+        tid = int(call.data.split("_")[-1])
+    except ValueError:
+        return
+
+    t = await db_get_ticket(tid)
+    if not t:
+        return await show(call, "❌ Заявка не найдена.", kb_admin())
+
+    await state.set_state(AdminFSM.waiting_ticket_reply)
+    await state.update_data(ticket_id=tid)
+
+    await show(
+        call,
+        f"✍️ <b>Ответ на заявку №{tid}</b>\n\n"
+        "Отправь текст ответа одним сообщением.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"adm_tk_view_{tid}")],
+        ]),
+    )
+
+
+@dp.message(AdminFSM.waiting_ticket_reply)
+async def msg_adm_ticket_reply(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return await state.clear()
+
+    reply_text = (message.text or "").strip()
+    if not reply_text:
+        return await send_photo_msg(message, "❌ Отправь текст ответа.")
+
+    data = await state.get_data()
+    tid = data.get("ticket_id")
+    if not tid:
+        await state.clear()
+        return
+
+    t = await db_get_ticket(tid)
+    if not t:
+        await state.clear()
+        return await send_photo_msg(message, "❌ Заявка не найдена.")
+
+    await db_set_ticket_reply(tid, reply_text)
+    await state.clear()
+
+    await send_photo_msg(message,
+                         f"✅ Ответ на заявку №{tid} отправлен пользователю.",
+                         kb_admin())
+
+    user_msg = (
+        "Здравствуйте! Мы рассмотрели ваше обращение в службу поддержки.\n\n"
+        f"{reply_text}\n\n"
+        "С уважением, Admiral Shop!"
+    )
+    try:
+        if PHOTO_FILE is not None:
+            await bot.send_photo(t["user_id"], PHOTO_FILE, caption=user_msg)
+        else:
+            await bot.send_message(t["user_id"], user_msg)
+    except Exception as e:
+        log.warning("failed to send support reply to %s: %s", t["user_id"], e)
+
+
+@dp.callback_query(F.data == "adm_credit")
+async def cb_adm_credit(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    await call.answer()
+    await state.set_state(AdminFSM.waiting_user_id)
+    await show(call, "Введи <b>ID пользователя</b>: /admin — отмена")
+
+
+@dp.message(AdminFSM.waiting_user_id)
+async def msg_adm_user_id(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return await state.clear()
+    try:
+        uid = int((message.text or "").strip())
+    except ValueError:
+        return await send_photo_msg(message, "❌ ID — это число.")
+
+    target = await db_get_user(uid)
+    if not target:
+        return await send_photo_msg(message, "❌ Пользователь не найден.")
+    await state.update_data(target_id=uid)
+    await state.set_state(AdminFSM.waiting_amount)
+    await send_photo_msg(
+        message,
+        f"Пользователь: {target['full_name']} (<code>{uid}</code>)\n"
+        "Введи сумму в ₽ (можно отрицательную для списания):",
+    )
+
+
+@dp.message(AdminFSM.waiting_amount)
+async def msg_adm_amount(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return await state.clear()
+    try:
+        amount = float((message.text or "").replace(",", ".").strip())
+        if amount == 0:
+            raise ValueError
+    except ValueError:
+        return await send_photo_msg(message, "❌ Некорректная сумма.")
+
+    data = await state.get_data()
+    uid = data["target_id"]
+    await db_add_balance(uid, amount)
+    await state.clear()
+
+    await send_photo_msg(
+        message,
+        f"✅ Пользователю <code>{uid}</code> начислено <b>{fmt_money(amount)} ₽</b>.",
+    )
+    try:
+        await bot.send_message(uid, f"💰 Баланс изменён на <b>{fmt_money(amount)} ₽</b>.")
+    except Exception:
+        pass
+
+
+# ============================================================
+#  ЗАПУСК
+# ============================================================
+async def main():
+    global BOT_USERNAME
+    db_init()
+    me = await bot.get_me()
+    BOT_USERNAME = me.username
+    print(f"✅ Бот @{BOT_USERNAME} запущен")
+
+    if webapp_enabled():
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="🛒 Магазин",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            )
+            print(f"✅ Кнопка «🛒 Магазин» установлена: {WEBAPP_URL}")
+        except Exception as e:
+            log.exception("failed to set menu button: %s", e)
+
+    asyncio.create_task(start_webapp_if_ready())
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
