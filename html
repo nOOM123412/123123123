@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Admiral Shop</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #060d1c; --card: #0d1a30; --card-2: #122343; --card-3: #193056;
+    --border: #1e3358; --border-2: #2a4472;
+    --gold: #c9a86a; --gold-2: #d4b483; --gold-3: #e8d7b0;
+    --green: #4ade80; --red: #f43f5e;
+    --muted: #6b7c9a; --muted-2: #4a5a75;
+    --text: #e8eef8; --text-dim: #c5d0e2;
+    --silver-2: #8b9bb4;
+    --radius: 18px; --radius-lg: 24px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px; min-height: 100vh; padding-bottom: 100px;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  .container { max-width: 520px; margin: 0 auto; padding: 16px; }
+
+  .hero {
+    background: radial-gradient(ellipse at 50% 0%, rgba(201,168,106,0.12), transparent 70%),
+                linear-gradient(160deg, #0a1a35 0%, #0d2350 45%, #071529 100%);
+    border-radius: var(--radius-lg); padding: 22px; margin-bottom: 18px;
+    position: relative; overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5), inset 0 1px 0 rgba(201,168,106,0.15);
+    animation: heroIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes heroIn { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+  .hero::before {
+    content: ''; position: absolute; top: -70%; right: -30%;
+    width: 300px; height: 300px;
+    background: radial-gradient(circle, rgba(201,168,106,0.25), transparent 65%);
+    border-radius: 50%; filter: blur(50px);
+  }
+  .hero-top { position: relative; z-index: 1; display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .hero-avatar {
+    width: 52px; height: 52px;
+    background: linear-gradient(135deg, rgba(201,168,106,0.25), rgba(201,168,106,0.08));
+    border: 1.5px solid rgba(201,168,106,0.5); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; color: var(--gold-3);
+    flex-shrink: 0;
+  }
+  .hero-name { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 3px; }
+  .hero-uid { font-size: 12px; color: var(--silver-2); font-weight: 500; }
+  .hero-balance-label {
+    font-size: 11px; color: var(--gold); text-transform: uppercase;
+    letter-spacing: 1.6px; margin-bottom: 6px; font-weight: 700;
+    position: relative; z-index: 1;
+  }
+  .hero-balance {
+    font-size: 38px; font-weight: 800;
+    background: linear-gradient(135deg, #e8d7b0 0%, #c9a86a 50%, #d4b483 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    letter-spacing: -1px; line-height: 1;
+    position: relative; z-index: 1;
+  }
+  .hero-balance sup { font-size: 18px; margin-left: 3px; -webkit-text-fill-color: initial; color: var(--gold-3); }
+  .hero-actions { display: flex; gap: 10px; margin-top: 18px; position: relative; z-index: 1; }
+  .hero-btn {
+    flex: 1; background: rgba(201,168,106,0.1);
+    border: 1px solid rgba(201,168,106,0.25); border-radius: 14px;
+    padding: 12px 14px; color: var(--gold-3); font-size: 13px; font-weight: 700;
+    cursor: pointer; text-align: center; user-select: none;
+    transition: all 0.2s;
+  }
+  .hero-btn:active { transform: scale(0.96); background: rgba(201,168,106,0.2); }
+
+  .card {
+    background: linear-gradient(160deg, var(--card-2) 0%, var(--card) 100%);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px; margin-bottom: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+    animation: cardIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .card-title {
+    font-size: 11px; color: var(--gold); text-transform: uppercase;
+    letter-spacing: 1.6px; font-weight: 700; margin-bottom: 14px;
+  }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: none; }
+  .row .k { color: var(--muted); font-size: 14px; }
+  .row .v { color: var(--text); font-size: 14px; font-weight: 600; }
+
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 15px 16px; border: none; border-radius: 14px;
+    font-size: 15px; font-weight: 700; color: #fff; cursor: pointer;
+    transition: all 0.18s; margin-bottom: 10px; text-decoration: none;
+    user-select: none;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn:last-child { margin-bottom: 0; }
+  .btn-primary { background: linear-gradient(135deg, #d4b483 0%, #c9a86a 100%); color: #1a1208; }
+  .btn-green { background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%); color: #052e16; }
+  .btn-gold { background: linear-gradient(135deg, #e8d7b0 0%, #c9a86a 100%); color: #1a1208; }
+  .btn-outline {
+    background: rgba(201,168,106,0.04);
+    border: 1px solid rgba(201,168,106,0.25);
+    color: var(--gold-3);
+  }
+  .btn-outline:active { background: rgba(201,168,106,0.12); border-color: var(--gold); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .nav-row { display: flex; gap: 8px; margin-bottom: 12px; }
+  .nav-row .btn { margin-bottom: 0; }
+
+  .catalog-header { display: flex; justify-content: space-between; align-items: baseline; padding: 0 4px; margin-bottom: 14px; }
+  .catalog-title {
+    font-size: 20px; font-weight: 800;
+    background: linear-gradient(135deg, #e8d7b0 0%, #c9a86a 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .catalog-count { font-size: 12px; color: var(--muted); font-weight: 600; }
+
+  .service {
+    background: linear-gradient(160deg, var(--card-2) 0%, var(--card) 100%);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 10px; overflow: hidden;
+    animation: cardIn 0.4s both;
+  }
+  .service.open { border-color: rgba(201,168,106,0.45); box-shadow: 0 8px 32px rgba(201,168,106,0.12); }
+  .service-head {
+    padding: 16px 18px; display: flex; justify-content: space-between;
+    align-items: center; cursor: pointer; user-select: none;
+  }
+  .service-head:active { background: rgba(201,168,106,0.05); }
+  .service-name { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 12px; }
+  .service-icon {
+    width: 38px; height: 38px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; flex-shrink: 0;
+    background: linear-gradient(135deg, #29b6f6, #0288d1);
+    transition: transform 0.3s;
+  }
+  .service.open .service-icon { transform: scale(1.08) rotate(-4deg); }
+  .service-arrow {
+    width: 28px; height: 28px; border-radius: 50%; background: var(--card-3);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); transition: all 0.35s; font-size: 10px;
+    border: 1px solid var(--border-2);
+  }
+  .service.open .service-arrow {
+    transform: rotate(180deg); background: rgba(201,168,106,0.2);
+    border-color: rgba(201,168,106,0.5); color: var(--gold);
+  }
+  .service-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.45s; }
+  .service.open .service-body { grid-template-rows: 1fr; }
+  .service-body-inner { overflow: hidden; }
+  .plan {
+    padding: 14px 18px; border-top: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(25,48,86,0.4) 0%, transparent 100%);
+  }
+  .plan-title { font-weight: 700; font-size: 14px; margin-bottom: 10px; color: var(--text-dim); }
+  .periods { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .period-btn {
+    background: rgba(6,13,28,0.6); border: 1px solid var(--border-2); border-radius: 12px;
+    padding: 11px 10px; text-align: center; cursor: pointer; user-select: none;
+    transition: all 0.2s;
+  }
+  .period-btn:active { transform: scale(0.96); border-color: var(--gold); }
+  .period-name { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+  .period-price { font-size: 15px; font-weight: 800; color: var(--gold-3); }
+
+  .purchase {
+    background: linear-gradient(160deg, var(--card-2) 0%, var(--card) 100%);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 10px; overflow: hidden;
+    animation: cardIn 0.4s both;
+  }
+  .purchase.open { border-color: rgba(201,168,106,0.45); }
+  .purchase-head {
+    padding: 16px 18px; cursor: pointer; display: flex;
+    justify-content: space-between; align-items: center; gap: 12px; user-select: none;
+  }
+  .purchase-head:active { background: rgba(201,168,106,0.05); }
+  .purchase-info { flex: 1; min-width: 0; }
+  .purchase-title {
+    font-size: 14px; font-weight: 700; margin-bottom: 5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .purchase-meta { display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+  .purchase-price { color: var(--gold-3); font-weight: 700; font-size: 13px; }
+  .purchase-arrow {
+    width: 28px; height: 28px; border-radius: 50%; background: var(--card-3);
+    border: 1px solid var(--border-2); display: flex; align-items: center;
+    justify-content: center; color: var(--muted); transition: all 0.35s;
+    font-size: 10px; flex-shrink: 0;
+  }
+  .purchase.open .purchase-arrow {
+    transform: rotate(180deg); background: rgba(201,168,106,0.2);
+    border-color: rgba(201,168,106,0.5); color: var(--gold);
+  }
+  .purchase-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.45s; }
+  .purchase.open .purchase-body { grid-template-rows: 1fr; }
+  .purchase-body-inner { overflow: hidden; }
+  .purchase-body-content { padding: 4px 18px 18px; border-top: 1px solid var(--border); }
+
+  .codes-label {
+    font-size: 11px; color: var(--gold); text-transform: uppercase;
+    letter-spacing: 1.4px; font-weight: 700; margin: 14px 0 8px;
+  }
+  .code {
+    display: block;
+    background: linear-gradient(135deg, #060d1c, #0d1a30);
+    border: 1px solid rgba(201,168,106,0.3); border-radius: 12px;
+    padding: 13px 14px;
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 14px; font-weight: 600; color: var(--gold-3);
+    cursor: pointer; word-break: break-all;
+    text-align: center; letter-spacing: 1.5px;
+    margin-bottom: 8px;
+    transition: all 0.2s;
+  }
+  .code:active { border-color: var(--gold); transform: scale(0.98); }
+  .empty-codes {
+    padding: 14px; background: rgba(244,63,94,0.08);
+    border: 1px solid rgba(244,63,94,0.25); border-radius: 12px;
+    font-size: 12px; color: #fb7185; text-align: center;
+  }
+
+  .review {
+    padding: 16px 18px;
+    background: linear-gradient(160deg, var(--card-2) 0%, var(--card) 100%);
+    border: 1px solid var(--border); border-radius: 14px;
+    margin-bottom: 10px; font-size: 14px; line-height: 1.55;
+    animation: cardIn 0.35s both;
+  }
+  .review-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .review-avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: linear-gradient(135deg, #d4b483, #8a7142);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; color: #1a1208; flex-shrink: 0;
+  }
+  .review-author { font-size: 13px; font-weight: 700; }
+  .review-stars { font-size: 11px; color: var(--gold); letter-spacing: 1px; }
+  .review-num {
+    font-size: 10px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 1px; margin-left: auto; font-weight: 600;
+  }
+  .review-text { color: var(--text-dim); line-height: 1.5; }
+  .reviews-nav { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+  .reviews-nav .btn { margin-bottom: 0; flex: 1; padding: 12px; font-size: 14px; }
+  .reviews-page-info {
+    padding: 0 14px; font-size: 13px; font-weight: 700; color: var(--gold);
+    white-space: nowrap;
+  }
+
+  .tabs {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(6,13,28,0.92); backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid var(--border); display: flex; z-index: 100;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tab {
+    flex: 1; padding: 10px 4px 12px; text-align: center;
+    color: var(--muted); font-size: 10px; font-weight: 700;
+    cursor: pointer; user-select: none; position: relative;
+  }
+  .tab.active { color: var(--gold); }
+  .tab.active::after {
+    content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 24px; height: 2px;
+    background: linear-gradient(90deg, var(--gold-3), var(--gold));
+    border-radius: 0 0 4px 4px; box-shadow: 0 0 12px var(--gold);
+  }
+  .tab-icon { font-size: 22px; display: block; margin-bottom: 2px; transition: transform 0.3s; }
+  .tab.active .tab-icon { transform: translateY(-2px) scale(1.15); }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+    backdrop-filter: blur(10px); z-index: 200; display: flex;
+    align-items: flex-end; opacity: 0; pointer-events: none;
+    transition: opacity 0.28s;
+  }
+  .modal-overlay.show { opacity: 1; pointer-events: auto; }
+  .modal {
+    background: linear-gradient(180deg, var(--card-2) 0%, var(--card) 100%);
+    border-radius: 24px 24px 0 0;
+    padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
+    width: 100%; max-width: 520px; margin: 0 auto;
+    transform: translateY(100%);
+    transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 -12px 48px rgba(0,0,0,0.6);
+    border-top: 1px solid rgba(201,168,106,0.2);
+  }
+  .modal-overlay.show .modal { transform: translateY(0); }
+  .modal-handle { width: 42px; height: 4px; background: rgba(201,168,106,0.4); border-radius: 2px; margin: 0 auto 18px; }
+  .modal-title {
+    font-size: 20px; font-weight: 800; margin-bottom: 18px;
+    background: linear-gradient(135deg, #e8d7b0, #c9a86a);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .modal-textarea, .modal-input {
+    width: 100%; background: rgba(6,13,28,0.7);
+    border: 1px solid var(--border-2); border-radius: 14px;
+    padding: 14px 16px; color: var(--text); font-size: 15px;
+    font-family: inherit; margin-bottom: 12px; outline: none;
+    transition: all 0.2s;
+  }
+  .modal-textarea:focus, .modal-input:focus { border-color: var(--gold); }
+  .modal-textarea { min-height: 110px; resize: vertical; }
+
+  .toast {
+    position: fixed; bottom: 110px; left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: linear-gradient(135deg, #d4b483 0%, #c9a86a 100%);
+    color: #1a1208; padding: 13px 24px; border-radius: 26px;
+    font-size: 13px; font-weight: 700; opacity: 0;
+    transition: all 0.35s; pointer-events: none; z-index: 300;
+    max-width: 90%; text-align: center;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.error { background: linear-gradient(135deg, #f43f5e, #e11d48); color: #fff; }
+
+  .loader { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid var(--border); border-top-color: var(--gold);
+    border-radius: 50%; margin: 0 auto 14px;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .skeleton {
+    background: linear-gradient(90deg, var(--card) 0%, var(--card-2) 50%, var(--card) 100%);
+    background-size: 200% 100%; animation: shimmer 1.4s infinite;
+    border-radius: 12px; margin-bottom: 10px;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .skeleton-card { height: 80px; }
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 14px; }
+  .empty-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.4; }
+
+  .ref-link {
+    background: rgba(6,13,28,0.7);
+    border: 1px solid rgba(201,168,106,0.3);
+    border-radius: 12px; padding: 13px;
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 11px; color: var(--gold-3);
+    word-break: break-all; cursor: pointer; text-align: center;
+    margin-bottom: 10px;
+  }
+  .ref-link:active { border-color: var(--gold); }
+
+  .fade-in { animation: fadeIn 0.35s both; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<div class="container" id="app">
+  <div class="loader"><div class="spinner"></div>Загрузка...</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="home"><span class="tab-icon">🏠</span>Главная</div>
+  <div class="tab" data-tab="catalog"><span class="tab-icon">🛒</span>Каталог</div>
+  <div class="tab" data-tab="purchases"><span class="tab-icon">🎁</span>Покупки</div>
+  <div class="tab" data-tab="profile"><span class="tab-icon">👤</span>Профиль</div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modalTitle">Заголовок</div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram.WebApp;
+try { tg.expand(); } catch (e) {}
+try {
+  tg.setHeaderColor('#060d1c');
+  tg.setBackgroundColor('#060d1c');
+} catch (e) {}
+
+const BOT_USERNAME = 'Admiral_Shop_Robot';
+
+function resolveUserId() {
+  try {
+    const fromUrl = new URLSearchParams(location.search).get('user_id');
+    if (fromUrl && /^\d+$/.test(fromUrl)) return String(fromUrl);
+  } catch (e) {}
+  try {
+    const tgId = tg.initDataUnsafe?.user?.id;
+    if (tgId && /^\d+$/.test(String(tgId))) return String(tgId);
+  } catch (e) {}
+  try {
+    const raw = tg.initData;
+    if (raw) {
+      const params = new URLSearchParams(raw);
+      const u = JSON.parse(params.get('user') || '{}');
+      if (u.id && /^\d+$/.test(String(u.id))) return String(u.id);
+    }
+  } catch (e) {}
+  return null;
+}
+
+let userId = resolveUserId();
+
+async function waitForUserId(maxWaitMs = 3000) {
+  const start = Date.now();
+  while (!userId && Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, 100));
+    userId = resolveUserId();
+  }
+  return userId;
+}
+
+const app = document.getElementById('app');
+const toast = document.getElementById('toast');
+const modalOverlay = document.getElementById('modalOverlay');
+const modalTitle = document.getElementById('modalTitle');
+const modalBody = document.getElementById('modalBody');
+
+let state = {
+  user: null,
+  purchases: null,
+  catalog: null,
+  reviews: null,
+  reviewsLoaded: false,
+  tab: 'home',
+  openServices: {},
+  openPurchases: {}
+};
+
+const SERVICE_ICONS = {
+  soundcloud: '🎵', spotify: '🎧', claude: '🤖',
+  capcut: '🎬', telegram: '✈️', chatgpt: '💬'
+};
+
+const REVIEWS_PER_PAGE = 2;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function fm(v) {
+  v = Number(v) || 0;
+  return Number.isInteger(v) ? String(v) : v.toFixed(2).replace('.', ',');
+}
+function showToast(text, isError = false) {
+  toast.textContent = text;
+  toast.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => toast.className = 'toast' + (isError ? ' error' : ''), 2000);
+  tg.HapticFeedback?.notificationOccurred(isError ? 'error' : 'success');
+}
+function haptic() { tg.HapticFeedback?.impactOccurred('light'); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Ошибка сервера');
+  return data;
+}
+
+function openModal(title, bodyHtml) {
+  modalTitle.textContent = title;
+  modalBody.innerHTML = bodyHtml;
+  modalOverlay.classList.add('show');
+}
+function closeModal() { modalOverlay.classList.remove('show'); }
+modalOverlay.addEventListener('click', e => {
+  if (e.target === modalOverlay) closeModal();
+});
+
+function render() {
+  if (!state.user) {
+    app.innerHTML = `
+      <div class="skeleton skeleton-card" style="height:180px;"></div>
+      <div class="skeleton skeleton-card"></div>
+      <div class="skeleton skeleton-card"></div>
+    `;
+    return;
+  }
+
+  let html = '';
+  if (state.tab === 'home') html = renderHome();
+  else if (state.tab === 'catalog') html = renderCatalog();
+  else if (state.tab === 'purchases') html = renderPurchases();
+  else if (state.tab === 'profile') html = renderProfile();
+  app.innerHTML = `<div class="fade-in">${html}</div>`;
+}
+
+function renderHome() {
+  const u = state.user;
+  const recent = (state.purchases || []).slice(0, 3);
+  const initial = (u.username || u.full_name || 'U').replace('@','').charAt(0).toUpperCase();
+
+  return `
+    <div class="hero">
+      <div class="hero-top">
+        <div class="hero-avatar">${initial}</div>
+        <div>
+          <div class="hero-name">${esc(u.username || u.full_name || 'Гость')}</div>
+          <div class="hero-uid">ID ${u.user_id}</div>
+        </div>
+      </div>
+      <div class="hero-balance-label">Баланс</div>
+      <div class="hero-balance">${fm(u.balance)}<sup>₽</sup></div>
+      <div class="hero-actions">
+        <div class="hero-btn" onclick="goTopup()">Пополнить</div>
+        <div class="hero-btn" onclick="goSupport()">Поддержка</div>
+      </div>
+    </div>
+
+    <div class="nav-row">
+      <button class="btn btn-primary" onclick="switchTab('catalog')">Открыть каталог</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Быстрые действия</div>
+      <button class="btn btn-gold" onclick="goPromo()">Активировать промокод</button>
+      <button class="btn btn-outline" onclick="showReferral()">Реферальная программа</button>
+      <button class="btn btn-outline" onclick="showReviews(0)" style="margin-bottom:0">Отзывы</button>
+    </div>
+
+    ${recent.length ? `
+    <div class="card">
+      <div class="card-title">Последние покупки</div>
+      ${recent.map(p => `
+        <div class="row" onclick="showPurchase(${p.id})" style="cursor:pointer">
+          <span class="k">${esc(p.title)}</span>
+          <span class="v" style="color:var(--gold-3)">${fm(p.price)} ₽</span>
+        </div>
+      `).join('')}
+      <button class="btn btn-outline" style="margin-top:14px;margin-bottom:0" onclick="switchTab('purchases')">Все покупки →</button>
+    </div>
+    ` : ''}
+  `;
+}
+
+function renderCatalog() {
+  if (!state.catalog) {
+    return `
+      <div class="catalog-header"><div class="catalog-title">Каталог</div></div>
+      <div class="skeleton skeleton-card"></div>
+      <div class="skeleton skeleton-card"></div>
+      <div class="skeleton skeleton-card"></div>
+    `;
+  }
+  const total = Object.keys(state.catalog).length;
+  let html = `
+    <div class="catalog-header">
+      <div class="catalog-title">Каталог подписок</div>
+      <div class="catalog-count">${total} сервисов</div>
+    </div>
+  `;
+  let idx = 0;
+  for (const [key, srv] of Object.entries(state.catalog)) {
+    const isOpen = state.openServices[key];
+    const emoji = SERVICE_ICONS[key] || '📦';
+    const delay = (idx * 0.05).toFixed(2);
+    idx++;
+    html += `
+      <div class="service ${isOpen ? 'open' : ''}" data-service="${key}" style="animation-delay: ${delay}s">
+        <div class="service-head" onclick="toggleService('${key}')">
+          <div class="service-name">
+            <div class="service-icon">${emoji}</div>
+            <span>${esc(srv.name)}</span>
+          </div>
+          <div class="service-arrow">▼</div>
+        </div>
+        <div class="service-body">
+          <div class="service-body-inner">
+            ${srv.plans.map(p => `
+              <div class="plan">
+                <div class="plan-title">${esc(p.title)}</div>
+                <div class="periods">
+                  ${p.prices.map(pr => `
+                    <div class="period-btn" onclick="event.stopPropagation(); buyPlan('${key}', '${p.code}', '${pr.period_code}')">
+                      <div class="period-name">${esc(pr.period)}</div>
+                      <div class="period-price">${esc(pr.price)} ₽</div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  return html;
+}
+
+function renderPurchases() {
+  if (!state.purchases) {
+    return `<div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div>`;
+  }
+  if (!state.purchases.length) {
+    return '<div class="empty"><div class="empty-icon">📭</div>У тебя пока нет покупок</div>';
+  }
+  let idx = 0;
+  return state.purchases.map(p => {
+    const codes = (p.codes || '').split(';').filter(x => x);
+    const isOpen = state.openPurchases[p.id];
+    const delay = (idx * 0.05).toFixed(2);
+    idx++;
+    return `
+      <div class="purchase ${isOpen ? 'open' : ''}" data-purchase="${p.id}" style="animation-delay: ${delay}s">
+        <div class="purchase-head" onclick="togglePurchase(${p.id})">
+          <div class="purchase-info">
+            <div class="purchase-title">${esc(p.title)}</div>
+            <div class="purchase-meta">
+              <span>${esc(p.created_at.slice(0, 16))}</span>
+              <span class="purchase-price">${fm(p.price)} ₽</span>
+            </div>
+          </div>
+          <div class="purchase-arrow">▼</div>
+        </div>
+        <div class="purchase-body">
+          <div class="purchase-body-inner">
+            <div class="purchase-body-content">
+              ${codes.length ? `
+                <div class="codes-label">Коды · нажми чтобы скопировать</div>
+                ${codes.map(c => `<code class="code" onclick="copyText('${esc(c)}')">${esc(c)}</code>`).join('')}
+              ` : '<div class="empty-codes">Коды кончились, обратитесь в поддержку</div>'}
+              <button class="btn btn-outline" style="margin-top:8px;margin-bottom:0" onclick="event.stopPropagation(); showInstruction()">Инструкция активации</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderProfile() {
+  const u = state.user;
+  return `
+    <div class="hero">
+      <div class="hero-top">
+        <div class="hero-avatar">${(u.username || u.full_name || 'U').replace('@','').charAt(0).toUpperCase()}</div>
+        <div>
+          <div class="hero-name">${esc(u.username || u.full_name || 'Гость')}</div>
+          <div class="hero-uid">ID ${u.user_id}</div>
+        </div>
+      </div>
+      <div class="hero-balance-label">Баланс</div>
+      <div class="hero-balance">${fm(u.balance)}<sup>₽</sup></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Статистика</div>
+      <div class="row"><span class="k">Куплено подписок</span><span class="v">${u.purchases_count || 0}</span></div>
+      <div class="row"><span class="k">Реферальный баланс</span><span class="v" style="color:var(--gold-3)">${fm(u.ref_balance)} ₽</span></div>
+      <div class="row"><span class="k">Дата регистрации</span><span class="v" style="font-size:12px">${(u.created_at || '').slice(0, 10)}</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Действия</div>
+      <button class="btn btn-primary" onclick="goTopup()">Пополнить баланс</button>
+      <button class="btn btn-gold" onclick="goPromo()">Активировать промокод</button>
+      <button class="btn btn-outline" onclick="showReferral()">Реферальная программа</button>
+      <button class="btn btn-outline" onclick="goSupport()">Поддержка</button>
+      <button class="btn btn-outline" onclick="showReviews(0)">Отзывы</button>
+      <button class="btn btn-outline" onclick="closeApp()" style="margin-bottom:0">Закрыть магазин</button>
+    </div>
+  `;
+}
+
+function toggleService(key) {
+  state.openServices[key] = !state.openServices[key];
+  haptic();
+  const el = document.querySelector(`[data-service="${key}"]`);
+  if (el) el.classList.toggle('open', state.openServices[key]);
+}
+
+function togglePurchase(id) {
+  state.openPurchases[id] = !state.openPurchases[id];
+  haptic();
+  const el = document.querySelector(`[data-purchase="${id}"]`);
+  if (el) el.classList.toggle('open', state.openPurchases[id]);
+}
+
+function buyPlan(service, plan, period) {
+  const srv = state.catalog[service];
+  const planObj = srv.plans.find(p => p.code === plan);
+  const priceObj = planObj.prices.find(pr => pr.period_code === period);
+  const price = Number(priceObj.price.replace(',', '.'));
+  const balance = Number(state.user.balance) || 0;
+
+  if (balance < price) {
+    openModal('Недостаточно средств', `
+      <p style="color:var(--muted);margin-bottom:18px;font-size:14px;line-height:1.6">
+        Нужно <b style="color:var(--gold-3)">${fm(price)} ₽</b>, у тебя <b style="color:var(--red)">${fm(balance)} ₽</b>.
+      </p>
+      <button class="btn btn-primary" onclick="closeModal(); goTopup()">Пополнить</button>
+      <button class="btn btn-outline" onclick="closeModal()">Отмена</button>
+    `);
+    return;
+  }
+
+  openModal('Подтверждение покупки', `
+    <div class="row"><span class="k">Сервис</span><span class="v">${esc(srv.name)}</span></div>
+    <div class="row"><span class="k">План</span><span class="v">${esc(planObj.title)}</span></div>
+    <div class="row"><span class="k">Срок</span><span class="v">${esc(priceObj.period)}</span></div>
+    <div class="row"><span class="k">Цена</span><span class="v" style="color:var(--gold-3)">${fm(price)} ₽</span></div>
+    <div class="row"><span class="k">Баланс после</span><span class="v">${fm(balance - price)} ₽</span></div>
+    <button class="btn btn-green" style="margin-top:16px" onclick="confirmBuy('${service}', '${plan}', '${period}')">Купить</button>
+    <button class="btn btn-outline" onclick="closeModal()">Отмена</button>
+  `);
+}
+
+async function confirmBuy(service, plan, period) {
+  closeModal();
+  try {
+    const res = await api('/api/buy', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: Number(userId), service, plan, period})
+    });
+    state.user = res.user;
+    state.purchases = await api(`/api/purchases/${userId}`);
+    const codes = res.codes || [];
+    openModal('Покупка успешна!', `
+      <p style="color:var(--gold-3);font-weight:800;margin-bottom:16px;font-size:16px">${esc(res.title)}</p>
+      ${codes.length ? `
+        <div class="codes-label">Твои коды · нажми чтобы скопировать</div>
+        ${codes.map(c => `<code class="code" onclick="copyText('${esc(c)}')">${esc(c)}</code>`).join('')}
+      ` : '<div class="empty-codes">Коды кончились, обратитесь в поддержку</div>'}
+      <button class="btn btn-outline" style="margin-top:10px" onclick="closeModal(); showInstruction()">Инструкция активации</button>
+      <button class="btn btn-primary" onclick="closeModal(); switchTab('purchases')">Мои покупки</button>
+      <button class="btn btn-outline" onclick="closeModal()">Закрыть</button>
+    `);
+  } catch (e) { showToast(e.message, true); }
+}
+
+function showPurchase(id) {
+  const p = state.purchases.find(x => x.id === id);
+  if (!p) return;
+  const codes = (p.codes || '').split(';').filter(x => x);
+  openModal(p.title, `
+    <div class="row"><span class="k">Цена</span><span class="v" style="color:var(--gold-3)">${fm(p.price)} ₽</span></div>
+    <div class="row"><span class="k">Дата</span><span class="v">${esc(p.created_at.slice(0, 16))}</span></div>
+    ${codes.length ? `
+      <div class="codes-label" style="margin-top:16px">Коды · нажми чтобы скопировать</div>
+      ${codes.map(c => `<code class="code" onclick="copyText('${esc(c)}')">${esc(c)}</code>`).join('')}
+    ` : '<div class="empty-codes" style="margin-top:16px">Коды кончились, обратитесь в поддержку</div>'}
+    <button class="btn btn-outline" style="margin-top:10px" onclick="showInstruction()">Инструкция активации</button>
+    <button class="btn btn-primary" onclick="closeModal()">Закрыть</button>
+  `);
+}
+
+function goPromo() {
+  openModal('Активация промокода', `
+    <p style="color:var(--muted);font-size:14px;margin-bottom:14px;line-height:1.5">
+      Введи промокод — сумма зачислится сразу на баланс.
+    </p>
+    <input class="modal-input" id="promoInput" placeholder="Например: GIVE400" autocapitalize="characters" autocomplete="off">
+    <button class="btn btn-gold" onclick="submitPromo()">Активировать</button>
+    <button class="btn btn-outline" onclick="closeModal()">Отмена</button>
+  `);
+  setTimeout(() => document.getElementById('promoInput')?.focus(), 200);
+}
+
+async function submitPromo() {
+  const code = (document.getElementById('promoInput').value || '').trim().toUpperCase();
+  if (!code) return showToast('Введи код', true);
+  try {
+    const res = await api('/api/promo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: Number(userId), code})
+    });
+    state.user = res.user;
+    closeModal();
+    showToast(`+${fm(res.amount)} ₽`);
+    render();
+  } catch (e) { showToast(e.message, true); }
+}
+
+async function loadAllReviews() {
+  if (state.reviewsLoaded) return;
+  try {
+    const all = [];
+    let page = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const data = await api(`/api/reviews?page=${page}`);
+      all.push(...data.reviews);
+      hasMore = data.has_more;
+      page++;
+      if (page > 30) break;
+    }
+    state.reviews = all;
+    state.reviewsLoaded = true;
+  } catch (e) {
+    state.reviews = [];
+  }
+}
+
+async function showReviews(page = 0) {
+  openModal('Отзывы покупателей', `<div class="loader"><div class="spinner"></div>Загрузка...</div>`);
+  await loadAllReviews();
+
+  const all = state.reviews || [];
+  const total = all.length;
+  const totalPages = Math.ceil(total / REVIEWS_PER_PAGE);
+  const start = page * REVIEWS_PER_PAGE;
+  const chunk = all.slice(start, start + REVIEWS_PER_PAGE);
+
+  if (!total) {
+    modalBody.innerHTML = '<div class="empty">Пока нет отзывов</div>';
+    return;
+  }
+
+  const html = chunk.map((r, i) => `
+    <div class="review">
+      <div class="review-head">
+        <div class="review-avatar">A</div>
+        <div>
+          <div class="review-author">Покупатель</div>
+          <div class="review-stars">★★★★★</div>
+        </div>
+        <div class="review-num">#${start + i + 1}</div>
+      </div>
+      <div class="review-text">${esc(r)}</div>
+    </div>
+  `).join('');
+
+  modalTitle.textContent = 'Отзывы покупателей';
+  modalBody.innerHTML = `
+    <p style="color:var(--muted);font-size:12px;margin-bottom:14px;font-weight:600">
+      Всего: ${total} · Средняя оценка: 4.9 / 5
+    </p>
+    ${html}
+    <div class="reviews-nav">
+      <button class="btn btn-outline" onclick="showReviews(${page - 1})" ${page <= 0 ? 'disabled' : ''}>← Назад</button>
+      <div class="reviews-page-info">${page + 1} / ${totalPages}</div>
+      <button class="btn btn-outline" onclick="showReviews(${page + 1})" ${page >= totalPages - 1 ? 'disabled' : ''}>Дальше →</button>
+    </div>
+    <button class="btn btn-primary" style="margin-top:14px" onclick="closeModal()">Закрыть</button>
+  `;
+}
+
+function goSupport() {
+  openModal('Поддержка', `
+    <p style="color:var(--muted);font-size:14px;margin-bottom:14px;line-height:1.5">
+      Опишите вашу проблему. Ответ придёт в чат с ботом.
+    </p>
+    <textarea class="modal-textarea" id="supportText" placeholder="Опишите вашу проблему..."></textarea>
+    <button class="btn btn-primary" onclick="submitSupport()">Отправить заявку</button>
+    <button class="btn btn-outline" onclick="closeModal()">Отмена</button>
+  `);
+  setTimeout(() => document.getElementById('supportText')?.focus(), 200);
+}
+
+async function submitSupport() {
+  const text = (document.getElementById('supportText').value || '').trim();
+  if (!text) return showToast('Введите текст', true);
+  try {
+    await api('/api/support', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: Number(userId), message: text})
+    });
+    closeModal();
+    showToast('Заявка создана');
+  } catch (e) { showToast(e.message, true); }
+}
+
+function showReferral() {
+  const link = `https://t.me/${BOT_USERNAME}?start=ref_${userId}`;
+  openModal('Реферальная программа', `
+    <p style="color:var(--muted);font-size:13px;margin-bottom:10px">Твоя ссылка:</p>
+    <div class="ref-link" onclick="copyText('${link}')">${link}</div>
+    <p style="color:var(--muted);font-size:12px;text-align:center;margin-bottom:16px">нажми чтобы скопировать</p>
+    <div class="row"><span class="k">Реферальный баланс</span><span class="v" style="color:var(--gold-3)">${fm(state.user.ref_balance)} ₽</span></div>
+    <button class="btn btn-green" style="margin-top:16px" onclick="withdrawRef()" ${state.user.ref_balance <= 0 ? 'disabled' : ''}>Вывести на основной</button>
+    <button class="btn btn-outline" onclick="closeModal()">Закрыть</button>
+  `);
+}
+
+async function withdrawRef() {
+  try {
+    const res = await api('/api/ref_withdraw', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: Number(userId)})
+    });
+    state.user = res.user;
+    closeModal();
+    showToast(`Переведено ${fm(res.moved)} ₽`);
+    render();
+  } catch (e) { showToast(e.message, true); }
+}
+
+function showInstruction() {
+  openModal('Инструкция активации', `
+    <div style="font-size:14px;line-height:1.75;color:var(--text-dim)">
+      1) Заходите в App Store<br>
+      2) Меняете регион аккаунта на <b style="color:var(--gold-3)">Турцию (Turkey)</b> по любому быстрому гайду<br>
+      3) Нажимаете на иконку человека сверху справа главной страницы App Store<br>
+      4) Нажимаете <b style="color:var(--gold-3)">Redeem Code / Активировать Код</b> (кнопка внизу)<br>
+      5) Вводите коды, которые вам отправили<br>
+      6) Заходите в приложение с VPN и выбираете нужный план в разделе upgrade<br>
+      7) Оплачиваете с баланса App Store<br>
+      8) Наслаждаетесь подпиской!
+    </div>
+    <button class="btn btn-primary" style="margin-top:18px" onclick="closeModal()">Понятно</button>
+  `);
+}
+
+function switchTab(t) {
+  state.tab = t;
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === t));
+  haptic();
+  render();
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => showToast('Скопировано'));
+}
+
+function closeApp() { tg.close(); }
+
+async function startBotFlow(endpoint) {
+  haptic();
+  let ok = false;
+  try {
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: Number(userId)})
+    });
+    ok = r.ok;
+  } catch (e) {}
+  if (ok) {
+    setTimeout(() => { try { tg.close(); } catch(e) {} }, 200);
+    setTimeout(() => { try { tg.close(); } catch(e) {} }, 600);
+  } else {
+    const url = `https://t.me/${BOT_USERNAME}?start=topup`;
+    try {
+      if (typeof tg.openTelegramLink === 'function') tg.openTelegramLink(url);
+      else window.location.href = url;
+      setTimeout(() => { try { tg.close(); } catch(e) {} }, 400);
+    } catch (e) { showToast('Не удалось открыть бота', true); }
+  }
+}
+
+function goTopup() { startBotFlow('/api/start_topup'); }
+
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => switchTab(t.dataset.tab));
+});
+
+async function loadAll() {
+  try {
+    state.user = await api(`/api/user/${userId}`);
+    render();
+    api(`/api/purchases/${userId}`).then(d => {
+      state.purchases = d;
+      if (state.tab === 'home' || state.tab === 'purchases') render();
+    }).catch(() => {});
+    api('/api/catalog').then(d => {
+      state.catalog = d;
+      if (state.tab === 'catalog') render();
+    }).catch(() => {});
+  } catch (e) {
+    app.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">⚠️</div>
+        Не удалось загрузить профиль<br>
+        <span style="font-size:12px;opacity:0.6">${esc(e.message)}</span>
+      </div>
+    `;
+  }
+}
+
+async function boot() {
+  try { tg.ready(); } catch (e) {}
+  userId = await waitForUserId(3000);
+
+  if (!userId) {
+    app.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">⚠️</div>
+        Не удалось определить пользователя.<br>
+        <span style="font-size:12px;opacity:0.6">Закрой и открой магазин заново из бота.</span>
+      </div>
+    `;
+    return;
+  }
+
+  loadAll();
+}
+
+boot();
+</script>
+</body>
+</html>
